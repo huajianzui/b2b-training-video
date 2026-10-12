@@ -11,7 +11,7 @@
     1. 编辑 cards.json，填标题、副标题、开场白文字
     2. python intro.py --config cards.json --attach output/demo-voiced.mp4 \
            --out output/demo-final.mp4
-    → 片头 + 正片 + 片尾一次拼好，最后自动校验容器元数据
+    → 片头 + 正片 + 片尾一次拼好，最后校验容器、轨道和实际解码
 
 只要片头卡：
     python intro.py --title "订单管理模块操作演示" --narration "本视频演示……"
@@ -36,7 +36,8 @@
     后一段从黑淡入）。原因：正片开头是浏览器加载中的白屏，深色片头硬切过去
     会明显闪白；两侧都做才能同时覆盖「片头→正片」和「正片→片尾」两个方向。
     --transition cut 改为流复制拼接（无损、快，但接缝是硬切，无过渡）。
-    无论哪种方式，产出后都会调用 tools/mp4info.js 校验容器元数据。
+    无论哪种方式，产出后都会调用 tools/mp4info.js 校验容器与实际解码。
+    --srt-input/--srt-output 将正片字幕平移到成品时间轴，保留原始字幕。
 """
 
 import argparse
@@ -47,7 +48,9 @@ import re
 import shutil
 import subprocess
 import sys
+import tempfile
 from pathlib import Path
+from subtitles import shift_srt
 
 HERE = Path(__file__).resolve().parent
 # produce.js 会通过环境变量传入解析好的路径；单独运行时用 PATH 上的命令
@@ -118,12 +121,22 @@ def duration_of(path):
     last = None
     for m in TIME_RE.finditer(r.stdout or ""):
         last = int(m.group(1)) * 3600 + int(m.group(2)) * 60 + float(m.group(3))
-    return last
+    return last if r.returncode == 0 else None
 
 
-def esc(s):
-    """转义 ffmpeg 滤镜表达式里的文本（值用单引号包裹，只需处理 \\ 和 '）"""
-    return s.replace("\\", "\\\\").replace("'", "\\'")
+def mp4_timing(path):
+    """读取已生成视频的精确轨道时长，供拼接和字幕共用时间轴。"""
+    if not usable(NODE_EXE):
+        die("无法读取视频时间轴：找不到 node，请配置 NODE_EXE")
+    try:
+        r = subprocess.run([str(NODE_EXE), str(HERE / "tools" / "mp4info.js"), str(path), "--require-audio", "--json"],
+                           cwd=str(HERE), stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                           text=True, encoding="utf-8", errors="replace", timeout=60)
+    except (subprocess.TimeoutExpired, OSError) as error:
+        die("读取视频时间轴失败：" + str(error))
+    if r.returncode != 0:
+        die("读取视频时间轴失败：", r.stdout)
+    return json.loads(r.stdout)
 
 
 def title_size(title):
@@ -169,6 +182,25 @@ async def synth_tts(text, out_path, voice, rate, volume, pitch):
 def build_card_video(dur, title, subtitle, footer, accent, bg1, bg2,
                      watermark, out_path):
     """纯滤镜合成标题卡：渐变底 → 品牌条 → 文字（错峰淡入）→ 整体淡入淡出"""
+    for name, color in (("accent", accent), ("bg1", bg1), ("bg2", bg2)):
+        if not isinstance(color, str) or not re.fullmatch(
+            r"(?:[A-Za-z][A-Za-z0-9]*|(?:0x|#)?[0-9A-Fa-f]{6}(?:[0-9A-Fa-f]{2})?)"
+            r"(?:@(?:0x[0-9A-Fa-f]{1,2}|\d+(?:\.\d*)?|\.\d+))?", color
+        ):
+            raise ValueError(name + " 必须是单个颜色值，不能包含滤镜表达式")
+    # textfile 避免业务文字进入多层滤镜解析；临时目录的相对路径没有用户提供的字符。
+    with tempfile.TemporaryDirectory(prefix="card-text-", dir=HERE) as text_dir:
+        _render_card_video(dur, title, subtitle, footer, accent, bg1, bg2,
+                           watermark, out_path, Path(text_dir))
+
+
+def _render_card_video(dur, title, subtitle, footer, accent, bg1, bg2,
+                       watermark, out_path, text_dir):
+    def text_source(key, value):
+        file = text_dir / (key + ".txt")
+        file.write_text(value, encoding="utf-8")
+        return ":textfile=" + file.relative_to(HERE).as_posix() + ":expansion=none"
+
     fs_title = title_size(title)
 
     chain = [
@@ -178,17 +210,17 @@ def build_card_video(dur, title, subtitle, footer, accent, bg1, bg2,
 
     if watermark:
         chain.append(
-            "drawtext=fontfile=" + FONT_REG +
-            ":text='" + esc(watermark) + "'"
-            ":fontsize=26:fontcolor=white@0.22"
+            "drawtext=fontfile=" + FONT_REG
+            + text_source("watermark", watermark)
+            + ":fontsize=26:fontcolor=white@0.22"
             ":x=w-text_w-48:y=h-text_h-46"
         )
 
     # 主标题：0.30s 起淡入
     chain.append(
-        "drawtext=fontfile=" + FONT_BOLD +
-        ":text='" + esc(title) + "'"
-        f":fontsize={fs_title}:fontcolor=white"
+        "drawtext=fontfile=" + FONT_BOLD
+        + text_source("title", title)
+        + f":fontsize={fs_title}:fontcolor=white"
         ":x=(w-text_w)/2:y=418"
         ":alpha='min(1,max(0,(t-0.30)/0.60))'"
     )
@@ -202,18 +234,18 @@ def build_card_video(dur, title, subtitle, footer, accent, bg1, bg2,
 
     if subtitle:
         chain.append(
-            "drawtext=fontfile=" + FONT_REG +
-            ":text='" + esc(subtitle) + "'"
-            ":fontsize=38:fontcolor=0xa8c8e8"
+            "drawtext=fontfile=" + FONT_REG
+            + text_source("subtitle", subtitle)
+            + ":fontsize=38:fontcolor=0xa8c8e8"
             ":x=(w-text_w)/2:y=598"
             ":alpha='min(1,max(0,(t-1.15)/0.60))'"
         )
 
     if footer:
         chain.append(
-            "drawtext=fontfile=" + FONT_REG +
-            ":text='" + esc(footer) + "'"
-            ":fontsize=27:fontcolor=0x7fa2c4"
+            "drawtext=fontfile=" + FONT_REG
+            + text_source("footer", footer)
+            + ":fontsize=27:fontcolor=0x7fa2c4"
             ":x=(w-text_w)/2:y=948"
             ":alpha='min(1,max(0,(t-1.35)/0.60))'"
         )
@@ -407,7 +439,7 @@ def concat_multi(segs, out_path, fade=0.6):
     只处理第二段的话，片尾场景会漏掉正片结尾那一下硬切。
     """
     n = len(segs)
-    durs = [duration_of(p) for p in segs]
+    durs = [mp4_timing(p)["videoDuration"] for p in segs]
 
     ins = []
     for p in segs:
@@ -415,8 +447,8 @@ def concat_multi(segs, out_path, fade=0.6):
 
     vparts, aparts = [], []
     for i in range(n):
-        v = f"[{i}:v]setsar=1,fps={FPS},format=yuv420p"
-        a = f"[{i}:a]aformat=sample_rates={SR}:channel_layouts=mono"
+        v = f"[{i}:v]trim=duration={durs[i]:.9f},setpts=PTS-STARTPTS,setsar=1,fps={FPS},format=yuv420p"
+        a = f"[{i}:a]aformat=sample_rates={SR}:channel_layouts=mono,apad,atrim=duration={durs[i]:.9f},asetpts=PTS-STARTPTS"
         if fade > 0.001:
             if i > 0:
                 v += f",fade=t=in:st=0:d={fade:.3f}"
@@ -456,9 +488,9 @@ def join(segs, out_path, transition, fade):
 
     if transition == "cut":
         r = concat_copy(segs, out_path)
-        if r.returncode == 0 and out_path.exists():
+        if r.returncode == 0 and out_path.exists() and out_path.stat().st_size > 0:
             print("  流复制拼接成功（无损）")
-            return True
+            return "cut"
         print("  流复制拼接失败，降级为重编码拼接...")
 
     # 实测拼接只需数秒。若 ffmpeg 在后台任务环境里偶发卡死，超时后重试一次；
@@ -467,8 +499,8 @@ def join(segs, out_path, transition, fade):
         print(f"  重编码拼接，接缝加 {fade:.2f}s 暗场过渡（两侧各一段）..."
               if attempt == 0 else "  首次超时，重试一次...")
         r = concat_multi(segs, out_path, fade=(fade if transition != "cut" else 0.0))
-        if out_path.exists() and out_path.stat().st_size > 0:
-            return True
+        if r.returncode == 0 and out_path.exists() and out_path.stat().st_size > 0:
+            return "reencode"
         if r.returncode != 3:      # 3 = 本脚本的「ffmpeg 超时」标记
             die("拼接失败：", r.stdout)
 
@@ -478,19 +510,19 @@ def join(segs, out_path, transition, fade):
 
 
 def verify(path):
-    """调用项目里的容器元数据校验器"""
+    """校验容器与必要轨道，并实际解码完整媒体。"""
     if not usable(NODE_EXE):
-        print("  （找不到 node，跳过元数据校验）")
-        return True
+        print("  校验失败：找不到 node，请配置 NODE_EXE")
+        return False
     try:
         r = subprocess.run(
-            [str(NODE_EXE), str(HERE / "tools" / "mp4info.js"), str(path)],
+            [str(NODE_EXE), str(HERE / "tools" / "mp4info.js"), str(path), "--require-audio", "--decode"],
             cwd=str(HERE), stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
             text=True, encoding="utf-8", errors="replace", timeout=60,
         )
-    except subprocess.TimeoutExpired:
-        print("  （校验器超时，跳过）")
-        return True
+    except (subprocess.TimeoutExpired, OSError) as error:
+        print("  校验失败：" + str(error))
+        return False
     print((r.stdout or "").rstrip())
     return r.returncode == 0
 
@@ -547,6 +579,8 @@ def main():
     ap.add_argument("--attach", default=None,
                     help="要拼接的正片（片头拼在其前，片尾拼在其后）")
     ap.add_argument("--out", default=None)
+    ap.add_argument("--srt-input", default=None, help="正片字幕；与 --srt-output 配对使用")
+    ap.add_argument("--srt-output", default=None, help="偏移到成品时间轴的字幕，不覆盖正片字幕")
     ap.add_argument("--transition", choices=["cut", "fade"], default="fade",
                     help="cut 流复制无损；fade 重编码并加暗场过渡（默认）")
     ap.add_argument("--fade", type=float, default=0.6, help="暗场过渡时长（秒）")
@@ -554,6 +588,11 @@ def main():
     ap.add_argument("--steps", type=int, default=None, help="footer 里 {steps} 的值，不传则从 flow.js 统计")
     ap.add_argument("--captions", type=int, default=None, help="footer 里 {captions} 的值，不传则从 flow.js 统计")
     args = ap.parse_args(normalize_argv(sys.argv[1:]))
+    if args.srt_input or args.srt_output:
+        if not args.srt_input or not args.srt_output or not args.attach:
+            ap.error("字幕偏移要求 --attach、--srt-input 和 --srt-output 同时提供")
+        if Path(args.srt_input).resolve() == Path(args.srt_output).resolve():
+            ap.error("成品字幕不能覆盖正片字幕，请使用不同的 --srt-output")
 
     if not usable(FFMPEG):
         die("找不到 ffmpeg：请通过 node produce.js 运行，或设置环境变量 FFMPEG 指向 ffmpeg 可执行文件")
@@ -618,6 +657,7 @@ def main():
 
     # ---------- 拼接 ----------
     final = None
+    used_join = None
     if len(segs) > 1:
         if not all(Path(s).exists() for s in segs):
             die("找不到要拼接的文件：" + "、".join(str(s) for s in segs if not Path(s).exists()))
@@ -625,10 +665,10 @@ def main():
 
         print("-" * 68)
         print("拼接：" + " + ".join(Path(s).name for s in segs))
-        join(segs, out_path, args.transition, args.fade)
+        used_join = join(segs, out_path, args.transition, args.fade)
 
         total = duration_of(out_path)
-        expect = sum(duration_of(s) or 0 for s in segs)
+        expect = sum(mp4_timing(s)["duration" if used_join == "cut" else "videoDuration"] for s in segs)
         print(f"  片长核对：期望 {expect:.2f}s ／ 实际 {total if total else 0:.2f}s")
         if total is None or abs(total - expect) > 0.35:
             print("  时长偏差过大，改用重编码拼接...")
@@ -638,26 +678,44 @@ def main():
             if r.returncode != 0 or not out_path.exists():
                 die("重编码拼接失败：", r.stdout)
             total = duration_of(out_path)
+            used_join = "reencode"
+            expect = sum(mp4_timing(s)["videoDuration"] for s in segs)
+            if total is None or abs(total - expect) > 0.35:
+                die("重编码后片长仍不匹配，不能交付。")
             print(f"  重编码后片长：{total:.2f}s")
         final = out_path
     else:
         if args.out:
-            shutil.copyfile(cards[0], args.out)
+            shutil.copyfile(segs[0], args.out)
             final = Path(args.out)
         else:
-            final = cards[0]
+            final = segs[0]
 
     shutil.rmtree(tmp_dir, ignore_errors=True)
 
     print()
     print("=" * 68)
     if not args.no_verify:
-        print("容器元数据校验（音频轨异常会让播放器直接跳过音轨）")
+        print("媒体校验（容器、音视频轨道和完整解码）")
         print("=" * 68)
-        verify(final)
+        if not verify(final):
+            die("最终 MP4 校验未通过，不能交付。")
     else:
-        print("成品：" + str(final))
+        print("已按 --no-verify 跳过验收；成品待校验：" + str(final))
         print("=" * 68)
+
+    if args.srt_input:
+        prefix = []
+        for seg in segs:
+            if Path(seg).resolve() == Path(args.attach).resolve():
+                break
+            prefix.append(seg)
+        offset = sum(mp4_timing(seg)["duration" if used_join == "cut" else "videoDuration"] for seg in prefix)
+        with Path(args.srt_input).open(encoding="utf-8-sig", newline="") as source:
+            shifted = shift_srt(source.read(), offset)
+        with Path(args.srt_output).open("w", encoding="utf-8", newline="") as target:
+            target.write(shifted)
+        print(f"成品字幕：{args.srt_output}（正片起点 {offset:.3f}s）")
 
 
 if __name__ == "__main__":

@@ -81,6 +81,12 @@
   }
   #log .err { color: #ff9b8f; }
   .empty { text-align: center; color: var(--muted); padding: 60px 0; }
+  .confirm-data { border: 1px solid #e8a33d; border-radius: 10px; background: #fff7e8; padding: 16px; margin-bottom: 16px; }
+  .confirm-data h2 { font-size: 16px; margin: 0 0 8px; }
+  .confirm-data p { overflow-wrap: anywhere; margin: 8px 0; }
+  #dataSummary { white-space: pre-line; }
+  .table-wrap { overflow-x: auto; }
+  table { min-width: 850px; }
 </style>
 </head>
 <body>
@@ -90,10 +96,26 @@
   <select id="fileSel" style="display:none"></select>
   <span class="pill" id="state">加载中</span>
   <span class="spacer"></span>
-  <a href="/">返回生成器</a>
+  <a href="/features">功能清单首页</a>
 </header>
 
 <main>
+  <div id="environment" class="bar"></div>
+  <section id="loginWait" class="confirm-data" hidden>
+    <h2>等待登录完成</h2>
+    <p id="loginSummary"></p>
+    <p id="loginHint"></p>
+    <button id="btnLogin" class="primary">我已登录完成 · 继续</button>
+    <p>登录确认后，如本轮要写入数据，还需单独确认环境与测试数据。</p>
+  </section>
+  <section id="dataWait" class="confirm-data" hidden>
+    <h2 id="dataTitle"></h2>
+    <p id="dataMismatch" class="scene-miss" hidden></p>
+    <p id="dataSummary"></p>
+    <p>本轮会真实保存。请先核对环境，并将上轮数据复位或换用独立测试数据。</p>
+    <label><input id="dataReady" type="checkbox"> 我已核对环境与本轮测试数据，允许本轮真实提交</label>
+    <p><button id="btnData" class="primary" disabled>允许本轮提交</button> <button id="btnCancelData">停止本轮</button></p>
+  </section>
   <div class="bar" id="bar" style="display:none">
     <span class="stat" id="stat"></span>
     <span class="spacer"></span>
@@ -121,19 +143,24 @@ const MODE = { cancel: '填完取消，不保存', submit: '真实提交' };
 let file = new URLSearchParams(location.search).get('f') || '';
 let data = null;
 let dirty = false;
+let sessionToken = '';
+let currentWait = null, currentLogin = null, loginSent = '', busy = false;
 
 async function api(url, body) {
-  const r = await fetch(url, body ? { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) } : {});
+  const r = await fetch(url, body ? { method: 'POST', headers: { 'Content-Type': 'application/json', 'X-Training-Token': sessionToken }, body: JSON.stringify(body) } : {});
   const j = await r.json().catch(() => ({}));
   if (!r.ok) throw new Error(j.error || ('请求失败 ' + r.status));
   return j;
 }
 
 async function init() {
+  sessionToken = (await api('/api/session')).token;
   const list = await api('/api/features/list');
   if (!list.length) {
     $('#pages').innerHTML = '<div class="empty">项目目录下还没有 *.features.yaml 功能清单</div>';
     $('#state').textContent = '无清单';
+    $('#btnSave').disabled = $('#btnConfirm').disabled = true;
+    await pollStatus(); setInterval(pollStatus, 1000);
     return;
   }
   if (!file || !list.some((x) => x.file === file)) file = list[0].file;
@@ -145,6 +172,8 @@ async function init() {
     sel.onchange = () => { if (!dirty || confirm('有未保存的修改，确定切换？')) { file = sel.value; load(); } else sel.value = file; };
   }
   await load();
+  await pollStatus();
+  setInterval(pollStatus, 1000);
 }
 
 async function load(fresh) {
@@ -164,20 +193,24 @@ function sceneCell(f) {
 function render() {
   $('#module').textContent = data.module + (data.generatedBy ? ' · 盘点：' + data.generatedBy + (data.generatedAt ? '（' + data.generatedAt + '）' : '') : '');
   $('#bar').style.display = '';
+  $('#environment').textContent = '环境：' + (data.environment.name || '未命名') + ' · '
+    + (data.environment.testData ? '允许写入测试数据（每轮提交前再次确认）' : '不允许写入测试数据，仅可取消');
   const rows = data.pages.map((p) => {
     const feats = data.features.filter((f) => f.page === p.id);
     if (!feats.length) return '';
     return '<section class="page"><h2>' + esc(p.name) + '<small>' + esc(p.entry || p.route) + '</small></h2>'
-      + '<table><thead><tr><th></th><th>功能</th><th style="width:170px">写数据怎么处理</th><th style="width:300px">条件与前提</th><th style="width:150px">脚本场景</th></tr></thead><tbody>'
+      + '<div class="table-wrap"><table><thead><tr><th></th><th>功能</th><th style="width:190px">演练 / 正式录制</th><th style="width:260px">条件与前提</th><th style="width:150px">脚本场景</th></tr></thead><tbody>'
       + feats.map((f) => {
         const tags = '<span class="tag ' + f.kind + '">' + (f.kind === 'write' ? '写数据' : '只读') + '</span>'
           + (f.status === 'new' ? '<span class="tag new">新增</span>' : '')
+          + (f.status === 'changed' ? '<span class="tag write">信息有变化</span>' : '')
           + (f.status === 'removed' ? '<span class="tag removed">已从系统中消失</span>' : '');
-        const mode = f.kind === 'write'
-          ? '<select data-mode="' + esc(f.id) + '"' + (f.include ? '' : ' disabled') + '>'
-            + Object.entries(MODE).map(([k, v]) => '<option value="' + k + '"' + (f.writeMode === k ? ' selected' : '') + '>' + v + '</option>').join('')
-            + '</select>'
-          : '<span class="meta">—</span>';
+        const choice = (key, title) => '<div class="meta">' + title + '</div><select aria-label="' + esc(f.name + title) + '" data-mode="' + esc(f.id)
+          + '" data-key="' + key + '"' + (f.include && !busy ? '' : ' disabled') + '>'
+          + (key === 'rehearsalMode' ? '<option value="">请确认演练方式</option>' : '')
+          + Object.entries(MODE).map(([k, v]) => '<option value="' + k + '"' + (f[key] === k ? ' selected' : '')
+            + (k === 'submit' && !data.environment.testData ? ' disabled' : '') + '>' + v + '</option>').join('') + '</select>';
+        const mode = f.kind === 'write' ? choice('rehearsalMode', '演练') + choice('writeMode', '正式录制') : '<span class="meta">—</span>';
         const meta = [
           f.permission && '权限：' + esc(f.permission),
           f.when && '显示条件：' + esc(f.when),
@@ -185,7 +218,7 @@ function render() {
           f.source && '<span title="源码位置">' + esc(f.source) + '</span>',
         ].filter(Boolean).map((x) => '<div>' + x + '</div>').join('');
         return '<tr class="' + (f.include ? '' : 'off') + (f.status === 'removed' ? ' removed' : '') + '">'
-          + '<td class="chk"><input type="checkbox" data-id="' + esc(f.id) + '"' + (f.include ? ' checked' : '') + (f.status === 'removed' ? ' disabled' : '') + '></td>'
+          + '<td class="chk"><input type="checkbox" data-id="' + esc(f.id) + '"' + (f.include ? ' checked' : '') + (f.status === 'removed' || busy ? ' disabled' : '') + '></td>'
           + '<td><span class="name">' + esc(f.name) + '</span>' + tags
           + (f.minor ? '<span class="tag read">简单操作</span>' : '')
           + (f.shared ? '<span class="tag read" title="已在《系统通用操作》里讲过，需要单独讲时再勾选">通用·' + esc(f.shared) + '</span>' : '')
@@ -194,7 +227,7 @@ function render() {
           + (f.blocked ? '<div class="blocked">⚠ ' + esc(f.blocked) + '</div>' : '') + '</td>'
           + '<td>' + mode + '</td><td class="meta">' + meta + '</td><td>' + sceneCell(f) + '</td></tr>';
       }).join('')
-      + '</tbody></table></section>';
+      + '</tbody></table></div></section>';
   }).join('');
   $('#pages').innerHTML = rows;
 
@@ -202,7 +235,7 @@ function render() {
     feat(el.dataset.id).include = el.checked; dirty = true; render();
   }; });
   document.querySelectorAll('select[data-mode]').forEach((el) => { el.onchange = () => {
-    feat(el.dataset.mode).writeMode = el.value; dirty = true; render();
+    feat(el.dataset.mode)[el.dataset.key] = el.value; dirty = true; render();
   }; });
   renderState();
 }
@@ -212,6 +245,7 @@ const feat = (id) => data.features.find((f) => f.id === id);
 function renderState() {
   const on = data.features.filter((f) => f.include);
   const writes = on.filter((f) => f.kind === 'write');
+  const undecided = writes.some((f) => !f.rehearsalMode);
   const miss = data.scriptFound ? on.filter((f) => !(data.scenes[f.id] || []).length) : [];
   const changes = data.features.filter((f) => f.status).length;
   $('#stat').innerHTML = '共 <b>' + data.features.length + '</b> 个功能，已选 <b>' + on.length + '</b> 个'
@@ -220,17 +254,21 @@ function renderState() {
     + (miss.length ? '　<span class="scene-miss">缺场景 ' + miss.length + ' 个</span>' : '');
 
   const st = $('#state');
-  const confirmed = !!data.confirmedAt && !dirty;
+  const confirmed = !!data.confirmedAt && !dirty && !undecided;
   if (dirty) { st.className = 'pill warn'; st.textContent = '有未保存的修改'; }
   else if (data.confirmedAt) { st.className = 'pill ok'; st.textContent = '已确认 · ' + data.confirmedAt; }
   else if (changes) { st.className = 'pill info'; st.textContent = '系统有变化，待重新确认（' + changes + ' 项）'; }
   else { st.className = 'pill warn'; st.textContent = '待确认'; }
 
-  $('#btnDry').disabled = !confirmed || !data.scriptFound;
-  $('#btnProduce').disabled = !confirmed || !data.scriptFound;
-  $('#btnConfirm').disabled = !on.length;
+  $('#btnDry').disabled = busy || !confirmed || !data.scriptFound;
+  $('#btnProduce').disabled = busy || !confirmed || !data.scriptFound;
+  $('#btnConfirm').disabled = busy || !on.length || undecided;
+  $('#btnSave').disabled = busy;
+  $('#fileSel').disabled = busy;
+  document.querySelectorAll('[data-pick]').forEach((b) => { b.disabled = busy; });
   let msg = '';
-  if (!data.scriptFound) msg = '清单没有关联演示脚本（script 字段），确认后还不能出片';
+  if (undecided) msg = '请为每个写数据功能单独选择演练方式，再确认清单';
+  else if (!data.scriptFound) msg = '清单没有关联演示脚本（script 字段），确认后还不能出片';
   else if (data.scriptError) msg = '读取演示脚本出错：' + data.scriptError;
   else if (!confirmed) msg = '勾选要演示的功能后点「确认清单」，确认后才能出片';
   else if (miss.length) msg = '有 ' + miss.length + ' 个已选功能还没有脚本场景，出片时会提示补写';
@@ -240,7 +278,7 @@ function renderState() {
 
 function decisions() {
   const d = {};
-  for (const f of data.features) d[f.id] = { include: f.include, writeMode: f.writeMode };
+  for (const f of data.features) d[f.id] = { include: f.include, writeMode: f.writeMode, rehearsalMode: f.rehearsalMode };
   return d;
 }
 
@@ -281,6 +319,54 @@ async function produce(dry) {
 
 $('#btnDry').onclick = () => produce(true);
 $('#btnProduce').onclick = () => produce(false);
+
+async function pollStatus() {
+  try {
+    const status = await api('/api/status');
+    const changed = busy !== (status.running || !!status.dataWait || !!status.loginWait);
+    busy = status.running || !!status.dataWait || !!status.loginWait;
+    currentLogin = status.loginWait;
+    $('#loginWait').hidden = !currentLogin;
+    if (currentLogin) {
+      $('#loginSummary').textContent = '登录页面：' + currentLogin.url;
+      $('#loginHint').textContent = currentLogin.hint;
+      $('#btnLogin').textContent = currentLogin.needForce ? '仍然继续（跳过登录状态识别）' : '我已登录完成 · 继续';
+      $('#btnLogin').disabled = loginSent === currentLogin.runId + ':' + currentLogin.needForce;
+    } else loginSent = '';
+    if ((currentWait && currentWait.runId) !== (status.dataWait && status.dataWait.runId)) {
+      $('#dataReady').checked = false; $('#btnData').disabled = true;
+    }
+    currentWait = status.dataWait;
+    $('#dataWait').hidden = !currentWait;
+    if (currentWait) {
+      $('#dataTitle').textContent = (currentWait.stage === 'rehearsal' ? '演练' : '正式录制') + '提交确认';
+      $('#dataMismatch').hidden = !!data && data.scriptSource === currentWait.source;
+      $('#dataMismatch').textContent = '注意：当前清单关联 ' + (data && data.script || '未配置脚本') + '；本次确认将授权下面显示的另一份脚本。';
+      $('#dataSummary').textContent = '脚本：' + currentWait.title + ' · ' + currentWait.source.split(/[\\/]/).pop()
+        + '\n路径：' + currentWait.source + '\n环境：' + currentWait.environment + ' · ' + currentWait.url
+        + '\n功能：' + currentWait.features.map((f) => f.name).join('、');
+    }
+    if (changed && data) render();
+  } catch (e) { $('#msg').textContent = '读取提交状态失败：' + e.message; }
+}
+$('#btnLogin').onclick = async () => {
+  if (!currentLogin) return;
+  const { runId, needForce } = currentLogin;
+  loginSent = runId + ':' + needForce; $('#btnLogin').disabled = true;
+  try { await api('/api/login-confirm', { runId, force: needForce }); }
+  catch (e) { loginSent = ''; $('#msg').textContent = e.message; }
+  await pollStatus();
+};
+$('#dataReady').onchange = () => { $('#btnData').disabled = !$('#dataReady').checked || !currentWait; };
+async function dataDecision(cancel) {
+  if (!currentWait) return;
+  const { runId, input, stage } = currentWait;
+  $('#btnData').disabled = true;
+  try { await api('/api/data-confirm', { runId, input, stage, cancel }); $('#dataReady').checked = false; }
+  catch (e) { $('#msg').textContent = e.message; await pollStatus(); }
+}
+$('#btnData').onclick = () => dataDecision(false);
+$('#btnCancelData').onclick = () => dataDecision(true);
 
 const es = new EventSource('/api/log');
 es.onmessage = (ev) => {

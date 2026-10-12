@@ -2,7 +2,7 @@
 后期合成：旁白音轨 + 烧录字幕 + 合流
 
 输入：output/raw.webm、output/session.json（场景在视频里的时刻）、output/tts/manifest.json
-输出：output/subs.srt（软字幕，可单独交付）、output/demo-voiced.mp4
+输出：output/subs.srt（正片时间轴字幕）、output/demo-voiced.mp4
 
 旁白按场景的 audioAt 摆放。录制时每个场景都等旁白念完才结束，所以句子之间不会重叠，
 也不需要 atempo 加速。
@@ -22,6 +22,7 @@ import shutil
 import subprocess
 import sys
 from pathlib import Path
+from subtitles import format_ms
 
 HERE = Path(__file__).resolve().parent
 OUT = HERE / "output"
@@ -64,8 +65,7 @@ def split_sentences(text):
 
 
 def ts(sec):
-    ms = int(round(sec * 1000))
-    return f"{ms // 3600000:02d}:{ms // 60000 % 60:02d}:{ms // 1000 % 60:02d},{ms % 1000:03d}"
+    return format_ms(int(round(sec * 1000)))
 
 
 def build_srt(cues):
@@ -139,11 +139,11 @@ def main():
     srt.write_text(build_srt(cues), "utf-8")
     print("字幕：" + str(srt.relative_to(HERE)))
 
-    print("第一步：转码并烧录字幕...")
+    print("第一步：转码并烧录字幕..." if cues else "第一步：无旁白字幕，转码视频...")
     silent = OUT / "demo-silent.mp4"
     # subtitles 滤镜里的 Windows 盘符路径很难转义，切到 output 目录用相对路径
-    vf = f"subtitles=subs.srt:fontsdir=../assets:force_style='{SUB_STYLE}'"
-    ff(["-i", "raw.webm", "-vf", vf, "-c:v", "libx264", "-preset", "medium", "-crf", "20",
+    vf = ["-vf", f"subtitles=subs.srt:fontsdir=../assets:force_style='{SUB_STYLE}'"] if cues else []
+    ff(["-i", "raw.webm"] + vf + ["-c:v", "libx264", "-preset", "medium", "-crf", "20",
         "-pix_fmt", "yuv420p", "-an", "-movflags", "+faststart", silent.name], cwd=str(OUT))
 
     print("第二步：渲染旁白音轨...")

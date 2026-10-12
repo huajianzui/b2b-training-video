@@ -2,16 +2,16 @@
 /**
  * 按演示脚本回放并录屏（旁白先行）
  *
- * 输入：output/script.json（script.js 归一化）+ output/tts/manifest.json（tts.py 产出的每句时长）
+ * 输入：当前脚本 YAML（旧 JSON 只可指向其 source）+ output/tts/manifest.json
  * 输出：output/raw.webm、output/session.json（每个场景在视频里的起止时刻）、output/run-report.json
  *
  * 节奏由旁白决定：每个场景至少持续「旁白时长 + 前后留白」，所以配音永远不会被挤压加速。
  * 画面里只有光标和点击涟漪，字幕在后期烧录 —— 改字幕不用重录。
  *
  * 用法：
- *   node play.js            正式录制
- *   node play.js --dry      演练：不录像、不等旁白，只验证每一步能否执行、断言是否成立
- *   node play.js --dry --shots   演练时顺带给每一步截图（红框标出目标控件），供操作手册使用
+ *   node play.js <脚本.yaml>            正式录制，按 writeMode 收尾
+ *   node play.js <脚本.yaml> --dry      演练，按 rehearsalMode 收尾；submit 仍等待用户确认数据
+ *   node play.js <脚本.yaml> --shots    正式手册素材；--dry --shots 为独立演练素材
  *   node play.js --headed   弹出浏览器窗口（默认无头，服务器 / CI 上也能跑）
  *   node play.js --dry --scenes 9-20   只演练第 9～20 个场景（也可写 12 或 9-），调脚本时用；正式录制不支持
  */
@@ -20,7 +20,10 @@ const fs = require('fs');
 const path = require('path');
 const { requireFrom } = require('./deps');
 const { ensureLoggedIn } = require('./login');
-const { asLoginProject, DEFAULT_OUT: SCRIPT_JSON } = require('./script');
+const { loadScript, asLoginProject, DEFAULT_OUT: SCRIPT_JSON } = require('./script');
+const { installRequestGuard, executionHash } = require('./requests');
+const { waitForData } = require('./confirmation');
+const { acquireLock } = require('./lock');
 const { loadAdapters, select } = require('./adapters');
 const { probeDuration } = require('./media');
 const { chromium } = requireFrom('playwright');
@@ -29,8 +32,10 @@ const HERE = __dirname;
 const OUT = path.join(HERE, 'output');
 const DRY = process.argv.includes('--dry');
 const HEADED = process.argv.includes('--headed');
-const SHOTS = DRY && process.argv.includes('--shots');
-const SHOT_DIR = path.join(OUT, 'manual', 'shots');
+const SHOTS = process.argv.includes('--shots');
+const STAGE = DRY ? 'rehearsal' : 'record';
+const MATERIAL_DIR = path.join(OUT, 'manual', STAGE);
+const SHOT_DIR = path.join(MATERIAL_DIR, 'shots');
 
 function sceneRange() {
   const i = process.argv.indexOf('--scenes');
@@ -57,6 +62,11 @@ const CFG = {
 };
 
 const wait = (ms) => new Promise((r) => setTimeout(r, ms));
+async function closeWithin(promise, ms, label) {
+  let timer;
+  try { await Promise.race([promise, new Promise((_, reject) => { timer = setTimeout(() => reject(new Error(label + '未在既有关闭时限内完成，录制未通过。')), ms); })]); }
+  finally { clearTimeout(timer); }
+}
 
 const CURSOR_OVERLAY = `
 (() => {
@@ -269,7 +279,7 @@ async function runAction(ctx, adapters, a, notes, step) {
       await page.mouse.wheel(0, a.y);
       return String(a.y);
     case 'wait':
-      if (!DRY) await wait(a.ms);
+      await wait(a.ms);
       return a.ms + 'ms';
     default:
       throw new Error('未知动作：' + a.op);
@@ -338,65 +348,72 @@ async function captureFailure(page, scene) {
 // ---------------------------------------------------------------- 主流程
 
 async function main() {
-  if (!fs.existsSync(SCRIPT_JSON)) throw new Error('找不到 ' + SCRIPT_JSON + '，先跑 node script.js');
-  const script = JSON.parse(fs.readFileSync(SCRIPT_JSON, 'utf8'));
+  const argv = process.argv.slice(2);
+  const source = argv.find((a, i) => !a.startsWith('--') && argv[i - 1] !== '--scenes')
+    || (fs.existsSync(SCRIPT_JSON) && JSON.parse(fs.readFileSync(SCRIPT_JSON, 'utf8')).source);
+  if (!source) throw new Error('缺少 YAML 来源；旧 JSON 不能作为执行输入，请运行 node play.js <脚本.yaml>。');
+  const script = loadScript(path.resolve(HERE, source), { stage: STAGE });
   const inRange = sceneRange();
   if (inRange) {
     const keep = script.scenes.map((s, i) => inRange(i + 1));
-    // 接续场景依赖前面场景留下的页面状态，往前补到这一组的第一个
+    // 范围必须包含完整接续组，不能漏掉基础动作或取消/提交收尾。
     for (let i = keep.length - 1; i > 0; i--) if (keep[i] && script.scenes[i].continue) keep[i - 1] = true;
+    for (let i = 1; i < keep.length; i++) if (keep[i - 1] && script.scenes[i].continue) keep[i] = true;
     script.scenes = script.scenes.filter((s, i) => keep[i]);
+    if (!script.scenes.length) throw new Error('--scenes 没有命中场景');
   }
+  const release = acquireLock(OUT);
+  process.once('exit', release);
+  for (const [signal, code] of [['SIGINT', 130], ['SIGTERM', 143]]) process.once(signal, () => process.exit(code));
   const adapters = loadAdapters(script.adapters);
 
   const manifestFile = path.join(OUT, 'tts', 'manifest.json');
-  const durs = {};
+  const durs = Object.create(null);
   if (!DRY) {
     if (!fs.existsSync(manifestFile)) throw new Error('找不到旁白清单 ' + manifestFile + '，先跑 tts.py');
     const m = JSON.parse(fs.readFileSync(manifestFile, 'utf8'));
+    if (m.voice !== script.voice || m.rate !== script.rate) throw new Error('旁白音色或语速已变化，请按当前脚本重新合成 tts.py。');
     for (const s of script.scenes) {
       if (s.narration && !m.scenes[s.id]) throw new Error('场景 ' + s.id + ' 的旁白还没合成，重跑 tts.py');
+      if (s.narration && (m.scenes[s.id].speech !== s.speech || !Number.isFinite(m.scenes[s.id].dur) || m.scenes[s.id].dur <= 0
+        || !fs.existsSync(path.resolve(HERE, m.scenes[s.id].file)))) throw new Error('场景 ' + s.id + ' 的旁白来源不匹配；旧清单需重跑 tts.py。');
       durs[s.id] = s.narration ? Math.round(m.scenes[s.id].dur * 1000) : 0;
     }
   }
 
   fs.mkdirSync(OUT, { recursive: true });
-  const auth = await ensureLoggedIn(asLoginProject(script), {
-    force: !!process.env.REC_RELOGIN,
-    trust: !!process.env.REC_TRUST_AUTH,
-  });
-
-  const browser = await chromium.launch({ headless: !HEADED, args: ['--disable-blink-features=AutomationControlled'] });
+  const report = { title: script.title, mode: DRY ? 'dry' : 'record', stage: STAGE, input: executionHash(script),
+    at: new Date().toISOString(), scenes: [], writes: [] };
+  const reportFile = path.join(OUT, 'run-report.json');
+  const session = { input: report.input, stage: STAGE, scenes: [] };
+  const manual = { input: report.input, stage: STAGE, scenes: [] };
+  let browser, context, guard, page, video, stopAt, failed;
   const videoDir = path.join(OUT, '_video');
-  fs.rmSync(videoDir, { recursive: true, force: true });
-  const context = await browser.newContext({
-    viewport: CFG.viewport,
-    deviceScaleFactor: 1,
-    locale: 'zh-CN',
-    recordVideo: DRY ? undefined : { dir: videoDir, size: CFG.viewport },
-    ...(auth.storageState ? { storageState: auth.storageState } : {}),
-  });
-  if (SHOTS) await context.addInitScript('window.__shotMode = true;');
-  await context.addInitScript(CURSOR_OVERLAY);
-  const page = await context.newPage();
-  const ctx = makeCtx(page);
-  const t0 = Date.now();
-  const now = () => Date.now() - t0;
-
-  console.log('[' + (DRY ? '演练' : '录制') + '] ' + script.title + '，共 ' + script.scenes.length + ' 个场景');
-  await page.goto(script.url, { waitUntil: 'domcontentloaded' });
-  if (!DRY) await wait(800);
-
-  const report = { title: script.title, mode: DRY ? 'dry' : 'record', at: new Date().toISOString(), scenes: [] };
-  const session = { scenes: [] };
-  const manual = { scenes: [] };
-  if (SHOTS) {
-    fs.rmSync(SHOT_DIR, { recursive: true, force: true });
-    fs.mkdirSync(SHOT_DIR, { recursive: true });
-  }
-  let failed = null;
-
+  // 本次执行失败时，不留下可被直接手册入口误用的旧素材。
+  fs.rmSync(path.join(MATERIAL_DIR, 'steps.json'), { force: true });
+  try {
+    const auth = await ensureLoggedIn(asLoginProject(script), { force: !!process.env.REC_RELOGIN, trust: !!process.env.REC_TRUST_AUTH });
+    report.confirmation = await waitForData(script);
+    browser = await chromium.launch({ headless: !HEADED, args: ['--disable-blink-features=AutomationControlled'] });
+    fs.rmSync(videoDir, { recursive: true, force: true });
+    context = await browser.newContext({ viewport: CFG.viewport, deviceScaleFactor: 1, locale: 'zh-CN', serviceWorkers: 'block',
+      recordVideo: DRY ? undefined : { dir: videoDir, size: CFG.viewport },
+      ...(auth.storageState ? { storageState: auth.storageState } : {}) });
+    guard = await installRequestGuard(context, { readOnlyRequests: script.readOnlyRequests,
+      writeRequests: script.safety.writeRequests, approvedWriteRequests: script.safety.approvedWriteRequests, pageUrl: script.url });
+    report.writes = guard.writes;
+    if (DRY && SHOTS) await context.addInitScript('window.__shotMode = true;');
+    await context.addInitScript(CURSOR_OVERLAY);
+    page = await context.newPage();
+    const ctx = makeCtx(page);
+    const t0 = Date.now(), now = () => Date.now() - t0;
+    console.log('[' + (DRY ? '演练' : '录制') + '] ' + script.title + '，共 ' + script.scenes.length + ' 个场景');
+    await page.goto(script.url, { waitUntil: 'domcontentloaded' });
+    if (!DRY) await wait(800);
+    guard.assert();
+    if (SHOTS) { fs.rmSync(SHOT_DIR, { recursive: true, force: true }); fs.mkdirSync(SHOT_DIR, { recursive: true }); }
   for (const scene of script.scenes) {
+    guard.grant([]);
     const start = now();
     const narr = durs[scene.id] || 0;
     const audioAt = start + CFG.lead;
@@ -412,6 +429,7 @@ async function main() {
       const results = [];
       for (const e of expects) {
         results.push(await checkExpect(ctx, e));
+        guard.assert();
         entry.steps.push('expect ' + describeExpect(e));
         console.log('   ✓ 断言  ' + describeExpect(e));
       }
@@ -427,6 +445,7 @@ async function main() {
 
       for (const [i, a] of scene.actions.entries()) {
         if (i === scene.expectAt) await checkpoint(scene.expect);
+        if (i >= scene.expectAt && scene.writeMode === 'submit') guard.grant(scene.writeRequests);
         const step = { id: scene.id + '-' + String(i + 1).padStart(2, '0'), op: a.op, label: a.label || '',
           text: a.text, value: a.value, key: a.key, url: a.url, y: a.y };
         doc.steps.push(step);
@@ -435,12 +454,15 @@ async function main() {
           if (now() < due) await wait(due - now());
         }
         const what = await runAction(ctx, adapters, a, entry.notes, step);
+        guard.assert();
         entry.steps.push(a.op + ' ' + what);
         console.log('   ✓ ' + a.op + '  ' + what);
         if (!DRY && a.op !== 'wait') await wait(CFG.stepPause);
       }
       if (scene.expectAt >= scene.actions.length) await checkpoint(scene.expect);
       await checkpoint(scene.endExpect);
+      guard.assert();
+      guard.grant([]);
       for (const n of entry.notes) console.log('   ⚠ ' + n);
     } catch (err) {
       entry.status = 'failed';
@@ -461,50 +483,49 @@ async function main() {
   }
 
   if (!DRY && !failed) await wait(CFG.tailWait);
-  const stopAt = now() / 1000;
-  const video = DRY ? null : page.video();
-
-  await Promise.race([context.close().catch(() => {}), wait(15000)]);
-  await Promise.race([browser.close().catch(() => {}), wait(8000)]);
-
-  report.ok = !failed;
-  fs.writeFileSync(path.join(OUT, 'run-report.json'), JSON.stringify(report, null, 2), 'utf8');
-
-  if (failed) {
-    console.error('\n[失败] 场景 ' + failed.id + '「' + failed.name + '」：' + failed.error);
-    console.error('       详情：output/run-report.json');
-    process.exit(2);
+  guard.assert(); stopAt = now() / 1000; video = DRY ? null : page.video();
+  } catch (error) {
+    failed = failed || { id: 'setup', name: '准备与导航', error: error.message.split('\n')[0] };
+    if (page && !failed.failure) failed.failure = await captureFailure(page, failed);
+  } finally {
+    if (guard) guard.close();
+    try { if (context) await closeWithin(context.close(), 15000, '浏览器上下文关闭'); }
+    catch (error) { failed = failed || { error: error.message }; }
+    try { if (browser) await closeWithin(browser.close(), 8000, '浏览器关闭'); }
+    catch (error) { failed = failed || { error: error.message }; }
   }
-  if (DRY) {
-    if (SHOTS) {
-      fs.writeFileSync(path.join(OUT, 'manual', 'steps.json'), JSON.stringify(manual, null, 2), 'utf8');
-      console.log('\n[手册素材] 截图与步骤已写入 output/manual/');
+  try {
+    if (guard) guard.assert();
+    if (report.writes.some((w) => w.outcome === 'unknown')) throw new Error('已有提交请求响应未知，请核对测试数据后重新确认。');
+    if (failed) throw new Error(failed.error);
+    if (!DRY) {
+      const raw = path.join(OUT, 'raw.webm');
+      fs.copyFileSync(await video.path(), raw);
+      fs.rmSync(videoDir, { recursive: true, force: true });
+      const videoDur = probeDuration(raw);
+      if (videoDur === null) throw new Error('读不到视频时长：' + raw);
+      const delta = stopAt - videoDur;
+      const shift = (t) => Math.max(0, Math.round((t - delta) * 1000) / 1000);
+      for (const s of session.scenes) { s.start = shift(s.start); s.audioAt = shift(s.audioAt); s.end = shift(s.end); }
+      session.duration = videoDur; session.video = path.relative(HERE, raw);
+      fs.writeFileSync(path.join(OUT, 'session.json'), JSON.stringify(session, null, 2), 'utf8');
+      console.log('\n[完成] ' + session.video + '  时长 ' + videoDur.toFixed(1) + 's');
     }
-    console.log('\n[演练通过] 全部 ' + script.scenes.length + ' 个场景可执行，断言成立。');
-    process.exit(0);
+    if (SHOTS) {
+      fs.mkdirSync(MATERIAL_DIR, { recursive: true });
+      fs.writeFileSync(path.join(MATERIAL_DIR, 'steps.json'), JSON.stringify(manual, null, 2), 'utf8');
+      console.log('[手册素材] ' + path.relative(HERE, MATERIAL_DIR));
+    }
+    report.ok = true;
+    if (DRY) console.log('\n[演练通过] 全部 ' + script.scenes.length + ' 个场景可执行，断言成立。');
+  } catch (error) { report.ok = false; report.failure = failed || { error: error.message }; }
+  if (!report.ok && report.writes.length) {
+    report.recovery = '已有提交请求发出，数据可能已改变；核对响应和测试数据、复位或换用独立数据后，重新运行并确认。不会自动回滚。';
+    console.error(report.recovery);
   }
-
-  const webm = await video.path();
-  const raw = path.join(OUT, 'raw.webm');
-  fs.copyFileSync(webm, raw);
-  fs.rmSync(videoDir, { recursive: true, force: true });
-
-  // 视频首帧比 t0 晚 δ（浏览器接管窗口的时间，每次不同），所有时刻都要减掉它才是视频时间
-  const videoDur = probeDuration(raw);
-  if (videoDur === null) throw new Error('读不到视频时长：' + raw);
-  const delta = stopAt - videoDur;
-  const shift = (t) => Math.max(0, Math.round((t - delta) * 1000) / 1000);
-  for (const s of session.scenes) {
-    s.start = shift(s.start);
-    s.audioAt = shift(s.audioAt);
-    s.end = shift(s.end);
-  }
-  session.duration = videoDur;
-  session.video = path.relative(HERE, raw);
-  fs.writeFileSync(path.join(OUT, 'session.json'), JSON.stringify(session, null, 2), 'utf8');
-
-  console.log('\n[完成] ' + session.video + '  时长 ' + videoDur.toFixed(1) + 's（首帧偏移 ' + delta.toFixed(2) + 's 已补偿）');
-  process.exit(0);
+  fs.writeFileSync(reportFile, JSON.stringify(report, null, 2), 'utf8');
+  if (!report.ok) console.error('[失败] ' + report.failure.error + '；详情：output/run-report.json');
+  process.exit(report.ok ? 0 : 2);
 }
 
 main().catch((e) => {

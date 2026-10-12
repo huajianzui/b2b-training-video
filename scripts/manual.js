@@ -2,20 +2,23 @@
 /**
  * 操作手册生成（Word）
  *
- * 输入：output/script.json + output/manual/steps.json（play.js --dry --shots 的产物：每一步的控件名称与红框截图）
+ * 输入：当前 YAML + output/manual/record/steps.json（正式录制的步骤和截图）
+ * --rehearsal 使用 output/manual/rehearsal/steps.json，生成独立的演练手册
  * 输出：output/<手册标题>.docx
  *
  * 和视频出自同一份 script.yaml：场景 → 小节，旁白 → 说明，动作 → 编号步骤，断言 → 操作结果。
  * 系统改版后重跑一次，视频和手册一起更新，内容不会对不上。
  *
  * 用法：
- *   node manual.js
+ *   node manual.js <脚本.yaml> [--rehearsal]
  */
 
 const fs = require('fs');
 const path = require('path');
 const { requireFrom } = require('./deps');
-const { DEFAULT_OUT: SCRIPT_JSON } = require('./script');
+const { loadScript, DEFAULT_OUT: SCRIPT_JSON } = require('./script');
+const { executionHash } = require('./requests');
+const { acquireLock } = require('./lock');
 const {
   Document, Packer, Paragraph, TextRun, ImageRun, Header, Footer, AlignmentType, LevelFormat,
   HeadingLevel, BorderStyle, ShadingType, PageNumber, PageBreak, TableOfContents,
@@ -23,7 +26,8 @@ const {
 
 const HERE = __dirname;
 const OUT = path.join(HERE, 'output');
-const STEPS_JSON = path.join(OUT, 'manual', 'steps.json');
+const STAGE = process.argv.includes('--rehearsal') ? 'rehearsal' : 'record';
+const STEPS_JSON = path.join(OUT, 'manual', STAGE, 'steps.json');
 
 const FONT = { ascii: 'Microsoft YaHei', eastAsia: 'Microsoft YaHei', hAnsi: 'Microsoft YaHei', cs: 'Microsoft YaHei' };
 const ACCENT = '2F7FD0';
@@ -232,12 +236,23 @@ function build(script, material) {
 }
 
 async function main() {
-  if (!fs.existsSync(SCRIPT_JSON)) throw new Error('找不到 ' + SCRIPT_JSON + '，先跑 node script.js');
-  if (!fs.existsSync(STEPS_JSON)) throw new Error('找不到手册素材 ' + STEPS_JSON + '，先跑 node play.js --dry --shots');
-  const script = JSON.parse(fs.readFileSync(SCRIPT_JSON, 'utf8'));
+  const source = process.argv.slice(2).find((a) => !a.startsWith('--'))
+    || (fs.existsSync(SCRIPT_JSON) && JSON.parse(fs.readFileSync(SCRIPT_JSON, 'utf8')).source);
+  if (!source) throw new Error('缺少 YAML 来源；请运行 node manual.js <脚本.yaml>。');
+  const script = loadScript(path.resolve(HERE, source), { stage: STAGE });
+  const release = acquireLock(OUT); process.once('exit', release);
+  if (!fs.existsSync(STEPS_JSON)) throw new Error('缺少 ' + STAGE + ' 手册素材，请运行对应阶段的 play.js <脚本.yaml> --shots。');
   const material = JSON.parse(fs.readFileSync(STEPS_JSON, 'utf8'));
+  if (material.stage !== STAGE || material.input !== executionHash(script)) throw new Error('手册素材与当前脚本或执行阶段不匹配，请重新执行对应的 play.js --shots。');
+  for (const s of material.scenes) for (const shot of [...s.steps.map((st) => st.shot), s.result && s.result.shot].filter(Boolean)) {
+    const full = path.resolve(HERE, shot), relative = path.relative(path.dirname(STEPS_JSON), full);
+    if (relative.startsWith('..') || path.isAbsolute(relative) || !fs.existsSync(full)) throw new Error('手册截图缺失或不属于当前阶段：' + shot);
+  }
 
-  const file = path.join(OUT, script.manual.title.replace(/[\\/:*?"<>|]/g, '_').trim() + '.docx');
+  const name = script.manual.title.replace(/[\\/:*?"<>|]/g, '_').trim() + (STAGE === 'rehearsal' ? '（演练）' : '');
+  if (STAGE === 'rehearsal') script.manual = { ...script.manual, title: name,
+    notes: ['本文件来自演练分支；正式交付请使用正式录制后生成的操作手册。', ...script.manual.notes] };
+  const file = path.join(OUT, name + '.docx');
   fs.writeFileSync(file, await Packer.toBuffer(build(script, material)));
 
   const steps = material.scenes.reduce((n, s) => n + s.steps.filter((st) => stepText(st)).length, 0);

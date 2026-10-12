@@ -3,7 +3,7 @@
  * 演示脚本（script.yaml）的读取、归一化与校验
  *
  * script.yaml 是新流水线唯一的输入：人写也好、AI 生成也好，都落到这一份。
- * 后面的 tts / play / compose 只读归一化后的 output/script.json，不再各自解析。
+ * play / manual 每次从 YAML 重新校验本阶段，tts / compose 使用经流水线核验的归一化产物。
  *
  * 结构（完整示例见 script.yaml）：
  *
@@ -48,7 +48,8 @@
 const fs = require('fs');
 const path = require('path');
 const { requireFrom } = require('./deps');
-const { loadFeatures } = require('./features');
+const { loadFeatures, validateDecisions } = require('./features');
+const { normalizeRequests, assertDisjoint } = require('./requests');
 
 const HERE = __dirname;
 const DEFAULT_OUT = path.join(HERE, 'output', 'script.json');
@@ -56,6 +57,22 @@ const DEFAULT_OUT = path.join(HERE, 'output', 'script.json');
 const LOCATOR_KEYS = ['testid', 'id', 'role', 'label', 'placeholder', 'text', 'css'];
 
 class ScriptError extends Error {}
+
+function numeric(value, where, nonnegative = false) {
+  const validType = typeof value === 'number' || typeof value === 'string' && value.trim() !== '';
+  const n = Number(value);
+  if (!validType || !Number.isFinite(n) || nonnegative && n < 0) {
+    throw new ScriptError(where + '：必须是' + (nonnegative ? '非负的' : '') + '有限数值');
+  }
+  return n;
+}
+
+function milliseconds(value, where) {
+  const ms = Math.round(numeric(value, where, true) * 1000);
+  // Node 的 setTimeout 超出有符号 32 位毫秒范围时会缩为 1ms，不能静默缩短用户的等待。
+  if (ms > 2147483647) throw new ScriptError(where + '：超出 Node 计时器的 2147483647ms 范围');
+  return ms;
+}
 
 function absUrl(u, baseDir) {
   if (!u) return '';
@@ -135,9 +152,9 @@ function normActionBody(raw, where, baseUrl) {
     case 'press':
       return { op, key: String(arg) };
     case 'scroll':
-      return { op, y: Number(arg) || 400 };
+      return { op, y: numeric(arg, where + ' scroll') };
     case 'wait':
-      return { op, ms: Math.round(Number(arg) * 1000) || 1000 };
+      return { op, ms: milliseconds(arg, where + ' wait') };
     default:
       throw new ScriptError(where + '：不认识的动作「' + op + '」（可用：goto / click / hover / fill / select / press / scroll / wait / waitFor）');
   }
@@ -188,7 +205,7 @@ function withEnding(s, end) {
  * 按功能清单筛场景。返回 null 表示这个场景关联的功能都没被勾选，跳过。
  * 没写 feature 的场景（比如进入模块的导航）始终保留。
  */
-function applyFeature(s, featById, where) {
+function applyFeature(s, featById, where, stage, continued) {
   if (s.feature === undefined) return s;
   if (!featById) throw new ScriptError(where + '：写了 feature 但脚本顶层没有配置 features 清单');
   const ids = (Array.isArray(s.feature) ? s.feature : [s.feature]).map(String);
@@ -199,12 +216,16 @@ function applyFeature(s, featById, where) {
   });
   const on = feats.filter((f) => f.include);
   if (!on.length) return null;
-  if (!s.ending) return s;
+  if (!s.ending) {
+    if (on.some((f) => f.kind === 'write') && !continued) throw new ScriptError(where + '：写功能组尾必须提供 ending，不能在基础动作中保存。');
+    return s;
+  }
   if (feats.length > 1) throw new ScriptError(where + '：ending 只能用在只关联一个功能的场景上');
   const f = feats[0];
-  const end = s.ending[f.writeMode];
-  if (!end) throw new ScriptError(where + '：功能「' + f.name + '」选的是「' + MODE_NAME[f.writeMode] + '」，场景缺少 ending.' + f.writeMode);
-  return withEnding(s, end);
+  const mode = stage === 'rehearsal' && f.kind === 'write' ? f.rehearsalMode : f.writeMode;
+  const end = s.ending[mode];
+  if (!end) throw new ScriptError(where + '：功能「' + f.name + '」本阶段选的是「' + MODE_NAME[mode] + '」，场景缺少 ending.' + mode);
+  return Object.assign(withEnding(s, end), { writeMode: f.kind === 'write' ? mode : 'cancel', writeRequests: f.writeRequests });
 }
 
 /**
@@ -276,7 +297,8 @@ function normCard(raw, fallbackTitle, speech) {
   return card;
 }
 
-function normalize(doc, file) {
+function normalize(doc, file, { stage = 'record' } = {}) {
+  if (!['rehearsal', 'record'].includes(stage)) throw new ScriptError('执行阶段只能是 rehearsal / record');
   if (!doc || typeof doc !== 'object') throw new ScriptError('脚本为空或不是对象');
   const baseDir = path.dirname(path.resolve(file));
   const url = absUrl(doc.url, baseDir);
@@ -292,6 +314,7 @@ function normalize(doc, file) {
       e.featuresFile = feat.file;
       throw e;
     }
+    validateDecisions(feat);
   }
   const featById = feat ? new Map(feat.features.map((f) => [f.id, f])) : null;
   const covered = new Set();
@@ -301,9 +324,14 @@ function normalize(doc, file) {
   const scenes = doc.scenes.map((raw, i) => {
     const where = '第 ' + (i + 1) + ' 个场景' + (raw && raw.name ? '「' + raw.name + '」' : '');
     if (!raw || typeof raw !== 'object') throw new ScriptError(where + '：写法不认识');
+    for (const key of ['writeMode', 'writeRequests', 'expectAt', 'endExpect']) {
+      if (Object.hasOwn(raw, key)) throw new ScriptError(where + '：' + key + ' 是内部字段，不能在场景中填写；提交授权由已确认功能清单和 ending 派生。');
+    }
     const id = String(raw.id || 's' + String(i + 1).padStart(2, '0'));
-    if (ids.has(id)) throw new ScriptError(where + '：id「' + id + '」重复');
-    ids.add(id);
+    if (/[\/\\:*?"<>|\u0000-\u001f]/.test(id)) throw new ScriptError(where + '：id 不能包含路径分隔符、控制字符或文件名非法字符');
+    const fileId = id.toLowerCase();
+    if (ids.has(fileId)) throw new ScriptError(where + '：id「' + id + '」忽略大小写后重复，会导致截图文件名冲突');
+    ids.add(fileId);
     if (raw.feature !== undefined) for (const f of [].concat(raw.feature)) covered.add(String(f));
     if (raw.continue) {
       const prev = doc.scenes[i - 1];
@@ -313,7 +341,7 @@ function normalize(doc, file) {
       if (key(prev) !== key(raw)) throw new ScriptError(where + '：continue 的场景要和上一个场景关联相同的 feature');
       if (prev.ending) throw new ScriptError(where + '：上一个场景有 ending（收尾会关掉页面状态），不能 continue');
     }
-    const s = applyFeature(raw, featById, where);
+    const s = applyFeature(raw, featById, where, stage, !!(doc.scenes[i + 1] && doc.scenes[i + 1].continue));
     if (!s) return null;
     const timing = s.timing || 'with';
     if (timing !== 'with' && timing !== 'before') throw new ScriptError(where + '：timing 只能是 with 或 before');
@@ -332,13 +360,15 @@ function normalize(doc, file) {
       narration,
       speech: speech(narration),
       timing,
-      hold: Math.round((s.hold === undefined ? 0.6 : Number(s.hold)) * 1000),
+      hold: milliseconds(s.hold === undefined ? 0.6 : s.hold, where + ' hold'),
       actions,
       expect: normExpect(s.expect, where),
       expectAt: s.expectAt === undefined ? actions.length : s.expectAt,
       endExpect: normExpect(s.endExpect, where + ' 收尾'),
       doc: normDoc(s.doc),
       feature: raw.feature === undefined ? [] : [].concat(raw.feature).map(String),
+      writeMode: s.writeMode || 'cancel',
+      writeRequests: normalizeRequests(s.writeRequests, url, where + ' writeRequests'),
     };
   }).filter(Boolean);
   if (!scenes.length) throw new ScriptError('按功能清单筛选后没有可演示的场景');
@@ -346,8 +376,20 @@ function normalize(doc, file) {
   const outro = normCard(doc.outro, '演示结束', speech);
   const narrations = [intro, outro, ...scenes].filter((x) => x && x.narration).map((x) => String(x.narration));
 
+  const readOnlyRequests = normalizeRequests(doc.readOnlyRequests, url, 'readOnlyRequests', { readOnly: true });
+  const writeRequests = feat ? feat.features.flatMap((f) => normalizeRequests(f.writeRequests, url, 'writeRequests')) : [];
+  const approvedWriteRequests = feat ? feat.features.filter((f) => f.include && f.kind === 'write'
+    && (stage === 'rehearsal' ? f.rehearsalMode : f.writeMode) === 'submit'
+    && scenes.some((s) => s.feature.includes(f.id))).flatMap((f) => normalizeRequests(f.writeRequests, url, 'writeRequests')) : [];
+  assertDisjoint(readOnlyRequests, writeRequests);
   return {
     source: path.resolve(file),
+    executionStage: stage,
+    readOnlyRequests,
+    safety: { environment: feat ? feat.environment : { name: '', testData: false },
+      writes: feat ? feat.features.filter((f) => f.include && f.kind === 'write').map((f) => ({ id: f.id, name: f.name,
+        mode: stage === 'rehearsal' ? f.rehearsalMode : f.writeMode })) : [],
+      writeRequests, approvedWriteRequests },
     title: String(doc.title || '操作演示'),
     url,
     voice: doc.voice || 'zh-CN-XiaoxiaoNeural',
@@ -380,7 +422,7 @@ function normalize(doc, file) {
   };
 }
 
-function loadScript(file) {
+function loadScript(file, options) {
   const YAML = requireFrom('yaml');
   const text = fs.readFileSync(file, 'utf8').replace(/^\uFEFF/, '');
   let doc;
@@ -389,14 +431,14 @@ function loadScript(file) {
   } catch (e) {
     throw new ScriptError('YAML 语法错误：' + e.message);
   }
-  return normalize(doc, file);
+  return normalize(doc, file, options);
 }
 
 /** 脚本里每个功能 id 有哪些场景（不做清单筛选和确认检查），给确认页标注"已有场景 / 缺场景" */
 function sceneFeatureIds(file) {
   const YAML = requireFrom('yaml');
   const doc = YAML.parse(fs.readFileSync(file, 'utf8').replace(/^\uFEFF/, '')) || {};
-  const map = {};
+  const map = Object.create(null);
   for (const s of doc.scenes || []) {
     if (!s || s.feature === undefined) continue;
     for (const id of [].concat(s.feature).map(String)) (map[id] = map[id] || []).push(String(s.name || ''));
@@ -406,7 +448,8 @@ function sceneFeatureIds(file) {
 
 /** login.js 认的是 project 结构（login 段 + url），这里转一下 */
 function asLoginProject(script) {
-  return { url: script.url, login: script.login };
+  return { url: script.url, login: script.login, readOnlyRequests: script.readOnlyRequests,
+    writeRequests: script.safety && script.safety.writeRequests };
 }
 
 module.exports = { loadScript, sceneFeatureIds, asLoginProject, ScriptError, DEFAULT_OUT };
@@ -419,6 +462,8 @@ if (require.main === module) {
   const file = path.resolve(HERE, process.argv[2] || 'script.yaml');
   try {
     const s = loadScript(file);
+    const release = require('./lock').acquireLock(path.dirname(DEFAULT_OUT));
+    process.once('exit', release);
     fs.mkdirSync(path.dirname(DEFAULT_OUT), { recursive: true });
     fs.writeFileSync(DEFAULT_OUT, JSON.stringify(s, null, 2), 'utf8');
     const ops = s.scenes.reduce((n, x) => n + x.actions.length, 0);

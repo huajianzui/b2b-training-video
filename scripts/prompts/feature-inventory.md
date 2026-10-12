@@ -33,6 +33,7 @@
 9. 显示条件从模板的 v-if / disabled 和后端校验里找，写进 when。纯技术性的控件（刷新、分页）不列；查询的「重置」并进查询功能。
 10. **通用操作标 shared。** 先找出系统的公共组件（如查询栏、表格、行操作菜单、表单弹窗的封装组件，被很多页面引用）。页面上直接由公共组件提供、用法和其他页面完全相同的操作，照样列出，但写 `shared: 查询`（或 表格 / 弹窗），由《系统通用操作》统一讲。判断看用法而不是看组件：查询条件里有本模块特有含义的（如业务阶段分售前、在建、售后），在 desc 里写清各选项含义，手册会列出；查询之外有特殊逻辑的（如联动、远程搜索人员），不标 shared。
 11. 一个模块通常 30–45 项。明显超出时，回头检查是否违反了 1–3 条。
+12. 写功能追踪到实际请求，记录 `writeRequests: [{method, url}]`（包含来源和精确路径，可用单个 `{id}` 路径段）。GET 修改数据也属于写。不要猜接口；拿不准时说明待核实，不填通配规则。登录 POST、POST 查询等只读接口另外列给主 Agent，供脚本 `readOnlyRequests` 使用；读写共用路径不能整体标为只读。
 
 ## 输出格式（YAML）
 
@@ -62,9 +63,13 @@ features:
     minor: true                      # 只按规则 7 写
     shared: 查询                      # 只按规则 10 写
     source: views/order/OrderListView.vue:6
+    writeRequests:                    # 仅写功能，必须来自真实业务代码
+      - {method: POST, url: /api/orders}
 ```
 
-不要写 include / writeMode / status（用户确认时回写）。可以用 # 注释按页面分组。
+不要写 include / writeMode / rehearsalMode / status（用户确认时回写）。不要自行填写 environment.testData，主 Agent 需先取得用户的环境选择。可以用 # 注释按页面分组。
+
+系统改版后保留相同功能的稳定 ID，如实更新业务说明、权限、资格、前提和页面信息；不要为保留旧确认而沿用过期字段。主 Agent 用 `features.js merge` 合并后，新增、消失和同 ID 信息变化都需用户重新确认，已有环境和两轮收尾选择会保留。
 
 ## 完成后返回
 
@@ -72,3 +77,4 @@ features:
 2. 页面数、功能数（write / blocked / minor / shared 各多少）
 3. 发现的 bug（文件、函数、现象）
 4. 最不确定的 3–5 个判断及原因
+5. 核实的写接口和只读 POST / WebSocket 接口；尚不能区分查询与修改的共用接口

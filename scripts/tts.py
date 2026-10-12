@@ -30,13 +30,13 @@ TIME_RE = re.compile(r"time=(\d+):(\d+):(\d+\.\d+)")
 
 
 def duration_of(path):
-    r = subprocess.run([str(FFMPEG), "-i", str(path), "-f", "null", "-"],
+    r = subprocess.run([str(FFMPEG), "-nostdin", "-xerror", "-i", str(path), "-f", "null", "-"],
                        stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True,
                        encoding="utf-8", errors="replace")
     last = None
     for m in TIME_RE.finditer(r.stdout or ""):
         last = int(m.group(1)) * 3600 + int(m.group(2)) * 60 + float(m.group(3))
-    return last
+    return last if r.returncode == 0 and last is not None and last > 0 else None
 
 
 async def synth(text, target, voice, rate):
@@ -78,7 +78,7 @@ async def main():
         dur = duration_of(clip)
         if dur is None:
             sys.exit(f"读不到时长：{clip}")
-        manifest["scenes"][s["id"]] = {"file": str(clip.relative_to(HERE)).replace("\\", "/"), "dur": round(dur, 3)}
+        manifest["scenes"][s["id"]] = {"file": str(clip.relative_to(HERE)).replace("\\", "/"), "dur": round(dur, 3), "speech": spoken}
         print(f"  [{mark}] {s['id']}  {dur:5.2f}s  {spoken}")
 
     (OUT / "tts").mkdir(parents=True, exist_ok=True)

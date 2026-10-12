@@ -3,6 +3,7 @@
   "private": true,
   "description": "演示脚本 → 录屏 + 配音 + 字幕 + 片头片尾 + Word 操作手册",
   "scripts": {
+    "test": "node --test tests/*.test.js",
     "check": "node produce.js --dry",
     "produce": "node produce.js",
     "confirm": "node app/server.js"

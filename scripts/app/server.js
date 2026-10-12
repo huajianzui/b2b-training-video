@@ -15,16 +15,20 @@
 const http = require('http');
 const fs = require('fs');
 const path = require('path');
+const crypto = require('crypto');
 const { spawn, spawnSync } = require('child_process');
 
 const ROOT = path.resolve(__dirname, '..');
 const PORT = Number(process.env.PORT || 7788);
 const PROJECT_FILE = path.join(ROOT, 'project.json');
+// 每次启动生成，不写入磁盘；外部网页既不能读取它，也不能伪造确认请求。
+const SESSION_TOKEN = crypto.randomBytes(32).toString('hex');
 
 // 登录闸门的两个握手文件（login.js 里定义，这里只读/写，不自己造路径）
 const { WAIT_FILE, GO_FILE } = require('../login');
 const { loadFeatures, saveDecisions } = require('../features');
 const { sceneFeatureIds } = require('../script');
+const { readDataWait, confirmData } = require('../confirmation');
 
 // ---------------------------------------------------------------- 登录闸门
 
@@ -63,9 +67,11 @@ function readLoginWait() {
   }
 }
 
-function confirmLogin(force) {
+function confirmLogin(force, runId) {
   const wait = readLoginWait();
   if (!wait) return { ok: false, error: '当前没有在等待登录确认（可能已经开始了，或登录不在这台机器上跑）。' };
+  if (runId !== undefined && runId !== wait.runId) return { ok: false, error: '登录确认已失效，请刷新后查看当前等待。' };
+  if (fs.existsSync(GO_FILE)) return { ok: false, error: '登录确认已提交，请等待登录状态检查。' };
   fs.writeFileSync(GO_FILE, JSON.stringify({ runId: wait.runId, force: !!force, at: Date.now() }, null, 2), 'utf8');
   return { ok: true, force: !!force };
 }
@@ -76,9 +82,41 @@ function send(res, code, body, type = 'application/json; charset=utf-8') {
   res.writeHead(code, {
     'Content-Type': type,
     'Cache-Control': 'no-store',
-    'Access-Control-Allow-Origin': '*',
   });
   res.end(body);
+}
+
+function authorize(req, res) {
+  const port = req.socket.localPort;
+  const host = req.headers.host;
+  if (![`127.0.0.1:${port}`, `localhost:${port}`].includes(host)) {
+    send(res, 403, JSON.stringify({ ok: false, error: '只允许本机确认服务的 Host' }));
+    return false;
+  }
+  const origin = `http://${host}`;
+  const fetchSite = req.headers['sec-fetch-site'];
+  if ((req.headers.origin && req.headers.origin !== origin)
+    || (fetchSite && !['same-origin', 'none'].includes(fetchSite))) {
+    send(res, 403, JSON.stringify({ ok: false, error: '不允许外部站点访问确认服务' }));
+    return false;
+  }
+  if (!['GET', 'POST'].includes(req.method)) {
+    send(res, 405, JSON.stringify({ ok: false, error: '不支持该请求方法' }));
+    return false;
+  }
+  if (req.method === 'POST') {
+    if ((req.headers['content-type'] || '').split(';')[0].trim().toLowerCase() !== 'application/json') {
+      send(res, 415, JSON.stringify({ ok: false, error: '写入请求必须使用 application/json' }));
+      return false;
+    }
+    const token = req.headers['x-training-token'];
+    if (typeof token !== 'string' || !/^[0-9a-f]{64}$/.test(token)
+      || !crypto.timingSafeEqual(Buffer.from(token), Buffer.from(SESSION_TOKEN))) {
+      send(res, 403, JSON.stringify({ ok: false, error: '缺少有效的确认会话令牌，请刷新确认页' }));
+      return false;
+    }
+  }
+  return true;
 }
 
 function readBody(req) {
@@ -190,25 +228,37 @@ function runOnce(script, args, timeoutMs = 120000) {
 // ---------------------------------------------------------------- 视频文件
 
 const MIME = { '.mp4': 'video/mp4', '.webm': 'video/webm', '.png': 'image/png',
-  '.docx': 'application/vnd.openxmlformats-officedocument.wordprocessingml.document' };
+  '.docx': 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+  '.srt': 'text/plain; charset=utf-8' };
+
+function within(dir, file) {
+  const rel = path.relative(dir, file);
+  return rel !== '' && rel !== '..' && !rel.startsWith('..' + path.sep) && !path.isAbsolute(rel);
+}
 
 function serveMedia(res, rel) {
   // 只允许输出目录下的文件，防目录穿越
-  const safe = path.normalize(rel).replace(/^([/\\])+/, '');
-  const full = path.resolve(ROOT, safe);
-  if (!full.startsWith(path.resolve(ROOT))) return send(res, 403, '拒绝访问', 'text/plain; charset=utf-8');
+  if (!rel || rel.includes('\0') || path.isAbsolute(rel)) return send(res, 403, '拒绝访问', 'text/plain; charset=utf-8');
+  const output = path.join(ROOT, 'output');
+  const full = path.resolve(ROOT, rel);
+  const ext = path.extname(full).toLowerCase();
+  if (!within(output, full) || !MIME[ext]) return send(res, 403, '拒绝访问', 'text/plain; charset=utf-8');
   if (!fs.existsSync(full) || !fs.statSync(full).isFile()) {
     return send(res, 404, '文件不存在', 'text/plain; charset=utf-8');
   }
 
-  const ext = path.extname(full).toLowerCase();
+  // realpath 同时检查 output 本身和其内部链接，不能借链接读出凭据或其他目录。
+  const realOutput = fs.realpathSync(output);
+  const realFull = fs.realpathSync(full);
+  if (realOutput !== path.join(fs.realpathSync(ROOT), 'output') || !within(realOutput, realFull)) {
+    return send(res, 403, '拒绝访问', 'text/plain; charset=utf-8');
+  }
+  if (!MIME[path.extname(realFull).toLowerCase()]) return send(res, 403, '拒绝访问', 'text/plain; charset=utf-8');
   const stat = fs.statSync(full);
-  const range = res.req ? null : null;
 
   res.writeHead(200, {
-    'Content-Type': MIME[ext] || 'application/octet-stream',
+    'Content-Type': MIME[ext],
     'Content-Length': stat.size,
-    'Accept-Ranges': 'bytes',
     'Cache-Control': 'no-store',
   });
   fs.createReadStream(full).pipe(res);
@@ -221,11 +271,12 @@ function rootFile(rel, suffix) {
   const name = String(rel || '');
   if (!name.endsWith(suffix) || name !== path.basename(name)) return null;
   const full = path.join(ROOT, name);
-  return fs.existsSync(full) ? full : null;
+  if (!fs.existsSync(full) || !fs.statSync(full).isFile()) return null;
+  return fs.realpathSync(full) === path.join(fs.realpathSync(ROOT), name) ? full : null;
 }
 
 function listFeatureFiles() {
-  return fs.readdirSync(ROOT).filter((n) => n.endsWith('.features.yaml')).map((n) => {
+  return fs.readdirSync(ROOT).filter((n) => rootFile(n, '.features.yaml')).map((n) => {
     try {
       const f = loadFeatures(path.join(ROOT, n));
       return { file: n, module: f.module, script: f.script, confirmedAt: f.confirmedAt,
@@ -245,24 +296,28 @@ function featureView(full) {
   if (scriptFull) {
     try { scenes = sceneFeatureIds(scriptFull); } catch (e) { scriptError = e.message; }
   }
-  return Object.assign({}, f, { file: path.basename(full), scriptFound: !!scriptFull, scriptError, scenes });
+  return Object.assign({}, f, { file: path.basename(full), scriptFound: !!scriptFull, scriptSource: scriptFull, scriptError, scenes });
 }
 
 // ---------------------------------------------------------------- 路由
 
 const server = http.createServer(async (req, res) => {
-  const url = new URL(req.url, 'http://127.0.0.1');
-  const p = url.pathname;
-
+  res.setHeader('X-Content-Type-Options', 'nosniff');
+  res.setHeader('X-Frame-Options', 'DENY');
+  res.setHeader('Referrer-Policy', 'no-referrer');
   try {
+    if (!authorize(req, res)) return;
+    if (!req.url.startsWith('/')) return send(res, 400, JSON.stringify({ ok: false, error: '请求地址不合法' }));
+    const url = new URL(req.url, 'http://' + req.headers.host);
+    const p = url.pathname;
+
+    if (p === '/api/session' && req.method === 'GET') {
+      return send(res, 200, JSON.stringify({ token: SESSION_TOKEN }));
+    }
     if (p === '/' || p === '/index.html') {
-      // 旧版流程的首页只在开发源里有；Skill 分发版没有它，首页直接进功能清单确认页
-      const index = path.join(__dirname, 'index.html');
-      if (!fs.existsSync(index)) {
-        res.writeHead(302, { Location: '/features' });
-        return res.end();
-      }
-      return send(res, 200, fs.readFileSync(index), 'text/html; charset=utf-8');
+      // 覆盖升级可能保留旧文件，入口始终使用当前确认流程。
+      res.writeHead(302, { Location: '/features' });
+      return res.end();
     }
 
     if (p === '/features' || p === '/features.html') {
@@ -320,14 +375,7 @@ const server = http.createServer(async (req, res) => {
     }
 
     if (p === '/api/build' && req.method === 'POST') {
-      if (!fs.existsSync(path.join(ROOT, 'build.js'))) {
-        return send(res, 404, JSON.stringify({ ok: false, error: '旧版生成接口已下线，请用演示脚本 + produce.js 出片' }));
-      }
-      const body = await readBody(req).catch(() => '{}');
-      let args = [];
-      try { args = (JSON.parse(body || '{}').args || []).filter((a) => /^--[\w-]+$/.test(a) || /^[-\w%]+$/.test(a)); } catch (e) { /* 用默认 */ }
-      const r = startJob('build.js', args);
-      return send(res, r.ok ? 200 : 409, JSON.stringify(r));
+      return send(res, 404, JSON.stringify({ ok: false, error: '旧版生成接口已下线，请用演示脚本 + produce.js 出片' }));
     }
 
     if (p === '/api/probe' && req.method === 'POST') {
@@ -360,16 +408,21 @@ const server = http.createServer(async (req, res) => {
     }
 
     if (p === '/api/login-confirm' && req.method === 'POST') {
-      // 用户在界面上点了【我已登录完成 · 开始录制】
-      const body = await readBody(req).catch(() => '{}');
-      let force = false;
-      try { force = !!(JSON.parse(body || '{}').force); } catch (e) { /* 默认不强制 */ }
-      const r = confirmLogin(force);
+      // 用户在界面上点了【我已登录完成 · 继续】
+      const body = JSON.parse((await readBody(req)) || '{}');
+      const r = confirmLogin(!!body.force, body.runId);
       return send(res, r.ok ? 200 : 409, JSON.stringify(r));
     }
 
     if (p === '/api/status') {
-      return send(res, 200, JSON.stringify({ running: !!running, loginWait: readLoginWait() }));
+      return send(res, 200, JSON.stringify({ running: !!running, loginWait: readLoginWait(), dataWait: readDataWait() }));
+    }
+
+    if (p === '/api/data-confirm' && req.method === 'POST') {
+      try {
+        confirmData(JSON.parse(await readBody(req)));
+        return send(res, 200, JSON.stringify({ ok: true }));
+      } catch (e) { return send(res, 409, JSON.stringify({ ok: false, error: e.message })); }
     }
 
     if (p === '/api/log') {
@@ -395,6 +448,6 @@ const server = http.createServer(async (req, res) => {
 });
 
 server.listen(PORT, '127.0.0.1', () => {
-  console.log('操作视频生成器已启动：http://127.0.0.1:' + PORT);
+  console.log('操作视频生成器已启动：http://127.0.0.1:' + server.address().port);
   console.log('（只监听本机，不会对外暴露；按 Ctrl+C 停止）');
 });
