@@ -1,0 +1,81 @@
+# 演示脚本 —— 新流水线的唯一输入（格式说明见 script.js 顶部）
+# 出片：node produce.js        只演练：node produce.js --dry
+
+title: 订单管理模块操作演示
+url: ./demo/demo.html
+voice: zh-CN-XiaoxiaoNeural
+rate: -6%
+watermark: 示例科技有限公司
+adapters: [element-plus]
+
+login:
+  enabled: false
+
+intro:
+  title: 订单管理模块操作演示
+  subtitle: 内部培训 ｜ 客服岗
+  narration: 本视频演示订单管理模块的日常操作，包括按订单号和状态查询，以及导出结果。请跟随画面操作。
+  footer: 共 {steps} 个操作步骤 · 演示用时约 {duration} 秒
+
+outro:
+  title: 演示结束
+  narration: 以上就是本次演示的全部内容。遇到订单状态异常，请先核对筛选条件，再联系信息中心。
+
+manual:
+  title: 订单管理模块操作手册
+  version: V1.0
+  audience: 客服岗、财务岗
+  overview: 本手册介绍订单管理模块的日常操作，包括按订单号和状态查询订单、重置筛选条件，以及导出订单结果。
+  prerequisites:
+    - 已获得「订单管理」菜单权限的系统账号
+    - 使用 Chrome 或 Edge 浏览器登录系统
+  notes:
+    - 遇到订单状态异常，请先核对筛选条件，再联系信息中心。
+
+scenes:
+  - name: 进入订单管理
+    narration: 首先，在左侧菜单点击订单管理，进入订单列表。
+    actions:
+      - click: { text: 订单管理 }
+    expect:
+      - visible: { placeholder: 输入订单号或客户名称搜索 }
+
+  - name: 按订单号查询
+    narration: 在搜索框输入订单号，可以精确定位到某一笔订单。
+    actions:
+      - fill:
+          target: [{ id: kw }, { placeholder: 输入订单号或客户名称搜索 }]
+          text: SO-20261008-002
+        label: 订单号
+    doc:
+      tips: [搜索框也支持输入客户名称进行模糊查询]
+
+  - name: 按状态筛选
+    narration: 再按订单状态筛选。客服最常用的是已发货，选好后点击搜索。
+    actions:
+      - select:
+          target: [{ id: status }, { css: "select[name=status]" }]
+          value: 已发货
+        label: 订单状态
+      - click: [{ id: btn-search }, { role: button, name: 搜索 }]
+    expect:
+      - text: 搜索完成
+    doc:
+      tips: [订单号与状态可以组合使用，条件越多结果越精确]
+
+  - name: 重置条件
+    narration: 查询结束后，点击重置，清空全部筛选条件。
+    actions:
+      - click: [{ id: btn-reset }, { role: button, name: 重置 }]
+    expect:
+      - text: 筛选条件已重置
+
+  - name: 导出订单
+    narration: 月末对账需要离线核对时，点击导出订单，把当前结果导出。导出任务提交后，稍等片刻即可下载。
+    actions:
+      - click: [{ testid: btn-export }, { role: button, name: 导出订单 }]
+    expect:
+      - text: 导出任务已提交
+    doc:
+      text: 需要离线核对订单（如月末对账）时，可以把当前筛选结果导出为文件。
+      tips: [导出的是当前筛选条件下的结果，导出前请先确认筛选条件]

@@ -1,0 +1,7 @@
+node_modules/
+output/
+assets/
+__pycache__/
+*.pyc
+auth*.json
+package-lock.json

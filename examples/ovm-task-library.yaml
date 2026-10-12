@@ -1,0 +1,1212 @@
+# 产值绩效管理系统 · 任务库管理 演示脚本
+# 只演练 + 出手册：node produce.js ovm-task-library.yaml --dry
+# 完整出片：      node produce.js ovm-task-library.yaml
+#
+# 演示哪些功能、写数据的功能是否真实提交，由功能清单 ovm-task-library.features.yaml 决定（在确认页勾选）。
+# 每个场景都要能独立执行，不依赖被跳过的场景留下的页面状态：场景开头 goto 到自己的页面（已在该页时不刷新）。
+# 每类页面的第一个场景从上一级页面点按钮进入，手册里才有入口。
+#
+# 演示数据（本地库）：TL-OVM = 项目任务库（id 2）；PRE_SALE_2026 = 售前任务库（id 1）；TEMPORARY_2026 = 临时任务库（id 3）
+#   OVMTM0001 / OVMTM0005 已下发，OVMTM0008 未下发；售前库 OVMRD0002 已下发、OVMRD0003 未下发；临时库 ZKTY20260001 未替换
+#   停用 / 归档任务库用 DEMOAP20260916，避免影响其他场景要用的库
+# 只写了 cancel 收尾的场景：真实提交需要参与业务流转的账号或完整的录入数据，admin 演示不了，选「真实提交」会在生成脚本时报错
+
+title: 任务库管理操作演示
+url: http://localhost:5174/dashboard
+voice: zh-CN-XiaoxiaoNeural
+rate: -6%
+adapters: [element-plus]
+features: ovm-task-library.features.yaml
+
+# 多音字读音：只改配音，字幕和手册仍显示原文（edge-tts 不支持 SSML 发音标注，只能换字）。
+# 本脚本里的「行」几乎都是表格的行（háng），统一读作「航」；读 xíng 的词列在 except 里。
+# 每次校验脚本会列出含易错多音字、还没处理的词。出片后抽听这些位置：
+#   读错了 → 加到 pronounce（整词写法如 预校验: 预叫验；或改写旁白避开）
+#   读对了 → 加到 pronounceChecked，以后不再提示
+pronounce:
+  行: { say: 航, except: [执行, 进行, 运行, 可行, 行为, 行动, 履行, 实行, 施行, 推行, 自行, 另行, 试行, 行使, 流行, 发行, 并行, 例行, 行政] }
+pronounceChecked: [参与, 卡片, 行数, 数量, 数据, 系数, 总数, 工作量, 批量, 名称, 重置, 重新, 清空, 空行, 空白, 占比, 弹出, 还可, 还没, 处理, 方便, 调整, 流转, 差不多, 校验]
+
+login:
+  enabled: true
+  mode: auto
+  start: auto
+  url: http://localhost:5174/admin-login
+  username: admin
+  password: <本地开发账号密码>
+  usernameSelector: input[autocomplete="username"]
+  passwordSelector: input[type="password"]
+  submitSelector: button.admin-submit
+  successUrl: /dashboard
+  # 账号密码登录页在已登录时仍显示密码框，复用登录态会被误判为失效；自动登录只需几秒，每次重登
+  reuse: false
+  headless: true
+  storage: output/auth-ovm.json
+
+intro:
+  title: 任务库管理操作演示
+  subtitle: 产值绩效管理系统 ｜ 内部培训
+  narration: 本视频演示任务库管理的完整操作，包括任务库的查找与维护，项目任务库的明细、任务维护和阶段维护，以及售前、临时等非项目任务库的日常操作。
+  footer: 共 {steps} 个操作步骤 · 演示用时约 {duration} 秒
+
+outro:
+  title: 演示结束
+  narration: 以上就是任务库管理的主要操作。如果看不到新增、编辑或维护按钮，请联系管理员开通对应的任务库权限。
+manual:
+  title: 任务库管理操作手册
+  version: V1.0
+  audience: 任务库维护人员
+  overview: 任务库管理用于统一维护项目、售前、售后、部门和临时五类任务来源。本手册介绍任务库的查找与维护、项目任务库的明细查看、任务维护和阶段维护，以及非项目任务库的任务维护和临时任务替换。
+  prerequisites:
+    - 已开通任务库查看权限的系统账号
+    - 新增、编辑、停用、归档任务库需要任务库维护权限
+    - 维护任务、维护阶段、维护进度需要对应的维护权限
+  notes:
+    - 看不到某个按钮时，说明当前账号没有对应权限，请联系管理员开通。
+    - 已下发的任务不能停用，任务编码、责任人和标准工作量也不能直接修改；标准工作量需通过变更申请调整。
+
+scenes:
+  # ================================================================ 任务库列表
+  - name: 进入任务库管理
+    narration: 任务库管理位于左侧菜单的项目管理下。先点击项目管理展开菜单，再点击任务库管理。
+    actions:
+      - click: [{ css: ".el-sub-menu__title:has-text('项目管理')" }, { role: menuitem, name: 项目管理, exact: true }]
+        label: 项目管理
+        at: 先点击项目管理
+      - click: { role: menuitem, name: 任务库管理, exact: true }
+        at: 再点击任务库管理
+    expect:
+      - visible: { role: heading, name: 任务库管理 }
+    doc:
+      result: 进入任务库管理页面，列表显示当前账号可查看的全部任务库。
+
+  - name: 切换查看范围
+    feature: list.scope
+    narration: 列表上方可以切换查看范围。我负责的只显示由你负责的任务库，我参与的显示你参与其中的任务库，全部任务库显示有权查看的所有库。
+    actions:
+      - goto: /task-libraries
+      - click: { text: 我负责的 }
+        label: 我负责的
+        at: 我负责的只显示
+      - click: { text: 我参与的 }
+        label: 我参与的
+        at: 我参与的显示
+      - click: { text: 全部任务库 }
+        label: 全部任务库
+        at: 全部任务库显示
+    hold: 1
+    expect:
+      - text: 产值绩效管理
+    doc:
+      result: 列表按所选范围显示任务库；选择「全部任务库」时显示当前账号有权查看的所有任务库。
+
+  - name: 按类型筛选
+    feature: list.type-filter
+    narration: 页面顶部按来源把任务库分为五类，卡片上显示各类的数量和负责人来源。点击售前任务库卡片，列表就只显示售前任务库，再点一次即可取消筛选。
+    actions:
+      - goto: /task-libraries
+      - hover: { role: button, name: 项目任务库 }
+        label: 项目任务库
+        at: 卡片上显示
+      - hover: { role: button, name: 临时任务库 }
+        label: 临时任务库
+        at: 负责人来源
+      - click: { role: button, name: 售前任务库 }
+        label: 售前任务库
+        at: 点击售前任务库卡片
+      - waitFor: { text: 2026年售前任务库 }
+      - wait: 1.2
+      - click: { role: button, name: 售前任务库 }
+        label: 售前任务库
+        at: 再点一次
+    hold: 1.2
+    expect:
+      - text: 产值绩效管理
+    doc:
+      result: 点击卡片后列表只显示该类任务库；再次点击取消筛选，恢复显示全部任务库。
+
+  - name: 按条件查询
+    feature: list.search
+    narration: 也可以在筛选区按编码或名称、年度和状态组合查询，比如输入售前，然后点击查询。
+    actions:
+      - goto: /task-libraries
+      - fill:
+          target: { placeholder: 编码 / 名称 }
+          text: 售前
+        label: 任务库
+        at: 比如输入售前
+      - click: { role: button, name: 查询, exact: true }
+        at: 然后点击查询
+    hold: 1.5
+    expect:
+      - text: 2026年售前任务库
+    doc:
+      result: 列表显示编码或名称中包含「售前」的任务库。
+
+  - name: 重置查询条件
+    feature: list.search
+    narration: 查询结束后点击重置，清空查询条件，恢复默认列表。
+    actions:
+      - goto: /task-libraries
+      - click: { role: button, name: 重置, exact: true }
+        at: 点击重置
+    expect:
+      - text: 产值绩效管理
+    doc:
+      result: 查询条件清空，列表恢复显示全部任务库。
+
+  - name: 新增任务库
+    feature: list.create
+    narration: 需要新建任务库时，点击右上角的新增任务库，任务库编码由系统自动生成。表单内容随任务库类型变化。项目任务库必须关联项目和阶段模板；切换为售前任务库后，这两项就不再需要。接着填写任务库名称，确认无误后点击保存即可。
+    actions:
+      - goto: /task-libraries
+      - click: { role: button, name: 新增任务库, exact: true }
+        at: 点击右上角
+      - waitFor: { css: ".el-dialog" }
+      - select:
+          target:
+            - { label: 任务库类型 }
+            - { css: ".el-dialog .el-form-item:has(.el-form-item__label:text-is('任务库类型')) .el-select" }
+          value: 售前任务库
+        label: 任务库类型
+        at: 切换为售前任务库
+      - fill:
+          target: { placeholder: 请输入任务库名称 }
+          text: 2027年售前任务库
+        label: 任务库名称
+        at: 接着填写任务库名称
+    hold: 1.5
+    expect:
+      - text: 售前任务库通常每年度建一个库
+    doc:
+      result: 弹出「新增任务库」窗口；切换为售前任务库后，关联项目、阶段模板、计划总工时和计划总产值不再显示，任务库编码按售前任务库规则重新生成。
+      tips:
+        - 带红色星号的为必填项
+        - 项目任务库必须关联项目和阶段模板，并填写计划总工时和计划总产值；关联项目和阶段模板创建后不可修改
+        - 部门任务库必须选择统计组织
+        - 售前、售后、临时任务库通常每年度建一个，同年度再新增时，保存前系统会再次确认
+    ending:
+      cancel:
+        narration: 这里仅作演示，点击取消关闭窗口，不保存数据。
+        actions:
+          - click: { css: ".el-dialog__footer button:has-text('取消')" }
+            label: 取消
+            at: 点击取消
+        doc:
+          result: 弹出「新增任务库」窗口；切换为售前任务库后，关联项目、阶段模板等不再显示。点击取消关闭窗口，不保存数据。
+      submit:
+        narration: 保存成功后，新任务库出现在列表中。
+        actions:
+          - click: { css: ".el-dialog__footer button:has-text('保存')" }
+            label: 保存
+            at: 点击保存
+        expect:
+          - text: 任务库已保存
+        doc:
+          result: 系统提示「任务库已保存」，新任务库出现在列表中。
+
+  - name: 编辑任务库
+    feature: list.edit
+    narration: 点击某个任务库右侧的编辑，可以修改名称、变更上限占比、使用状态和备注。关联项目和阶段模板属于建库身份，创建后不能修改；已有任务的任务库，年度也不能再改。
+    actions:
+      - goto: /task-libraries
+      - click: { css: "tr:has-text('TL-OVM') button:has-text('编辑')" }
+        label: 编辑
+        at: 右侧的编辑
+      - waitFor: { text: 编辑任务库 }
+      - hover: { css: ".el-dialog .el-form-item:has(.el-form-item__label:text-is('关联项目')) .el-select" }
+        label: 关联项目
+        at: 关联项目和阶段模板
+    hold: 1.5
+    expect:
+      - text: 编辑任务库
+    doc:
+      result: 弹出「编辑任务库」窗口，关联项目、阶段模板等建库信息显示为灰色，不可修改。
+      tips: [窗口底部会提示当前任务库的任务数量，以及哪些字段因此不可修改]
+    ending:
+      cancel:
+        narration: 这里不做修改，点击取消关闭窗口。
+        actions:
+          - click: { css: ".el-dialog__footer button:has-text('取消')" }
+            label: 取消
+            at: 点击取消
+      submit:
+        narration: 修改完成后点击保存，并在确认框中确认。
+        actions:
+          - click: { css: ".el-dialog__footer button:has-text('保存')" }
+            label: 保存
+            at: 点击保存
+          - click: { css: ".el-message-box__btns .el-button--primary" }
+            label: 确认
+            at: 在确认框中确认
+        expect:
+          - text: 任务库已保存
+        doc:
+          result: 系统提示「任务库已保存」，列表中的任务库信息随之更新。
+
+  - name: 停用任务库
+    feature: list.toggle
+    narration: 不再使用的任务库可以停用。点击右侧的更多，选择停用，系统会弹出确认框。停用后还可以在同一位置重新启用。
+    actions:
+      - goto: /task-libraries
+      - click: { css: "tr:has-text('DEMOAP20260916') .el-dropdown" }
+        label: 更多
+        at: 点击右侧的更多
+      - click: { role: menuitem, name: 停用, exact: true }
+        at: 选择停用
+    expect:
+      - text: 停用任务库
+    doc:
+      result: 弹出「停用任务库」确认框。
+    ending:
+      cancel:
+        narration: 这里仅作演示，点击取消。
+        actions:
+          - click: { css: ".el-message-box__btns button:has-text('取消')" }
+            label: 取消
+            at: 点击取消
+        doc:
+          result: 弹出「停用任务库」确认框；点击取消后任务库保持启用。
+      submit:
+        narration: 确认后，任务库的启用状态变为停用。
+        actions:
+          - click: { css: ".el-message-box__btns .el-button--primary" }
+            label: 停用
+            at: 确认后
+        expect:
+          - text: 任务库已停用
+        doc:
+          result: 系统提示「任务库已停用」，该任务库的启用状态变为停用。
+
+  - name: 归档任务库
+    feature: list.archive
+    narration: 已经结束的任务库可以归档。同样在更多中选择归档，并在确认框中处理。
+    actions:
+      - goto: /task-libraries
+      - click: { css: "tr:has-text('DEMOAP20260916') .el-dropdown" }
+        label: 更多
+        at: 同样在更多中
+      - click: { role: menuitem, name: 归档, exact: true }
+        at: 选择归档
+    expect:
+      - text: 归档任务库
+    doc:
+      result: 弹出「归档任务库」确认框。
+    ending:
+      cancel:
+        narration: 这里点击取消，不做归档。
+        actions:
+          - click: { css: ".el-message-box__btns button:has-text('取消')" }
+            label: 取消
+            at: 点击取消
+        doc:
+          result: 弹出「归档任务库」确认框；点击取消后任务库不做变化。
+      submit:
+        narration: 确认后任务库归档。
+        actions:
+          - click: { css: ".el-message-box__btns .el-button--primary" }
+            label: 归档
+            at: 确认后
+        expect:
+          - text: 任务库已归档
+        doc:
+          result: 系统提示「任务库已归档」。
+
+  - name: 查看任务明细
+    feature: list.detail
+    narration: 在列表中点击某个任务库右侧的明细，可以进入任务库明细页面，查看该任务库下的全部任务。
+    actions:
+      - goto: /task-libraries
+      - click: { css: "tr:has-text('TL-OVM') button:has-text('明细')" }
+        label: 明细
+        at: 点击某个任务库
+    hold: 2
+    expect:
+      - url: /task-libraries/
+      - visible: { css: ".el-table__row" }
+    doc:
+      result: 进入「任务库明细」页面，可按编码、任务内容、责任人和状态筛选任务。
+
+  # ================================================================ 项目任务库明细
+  - name: 筛选项目任务
+    feature: pdetail.filter
+    narration: 项目任务库明细按阶段列出全部任务。可以按编码、任务内容、责任人、执行状态和下发状态筛选，比如输入需求后点击查询，查看完再点击重置。
+    actions:
+      - goto: /task-libraries/2/items
+      - fill:
+          target: { placeholder: 任务内容, exact: true }
+          text: 需求
+        label: 任务内容
+        at: 比如输入需求
+      - click: { role: button, name: 查询, exact: true }
+        at: 后点击查询
+      - waitFor: { text: 进行需求调研 }
+      - wait: 1.2
+      - click: { role: button, name: 重置, exact: true }
+        at: 再点击重置
+    expect:
+      - text: 主持项目立项
+    doc:
+      result: 查询后列表只显示任务内容包含「需求」的任务；重置后恢复显示全部任务。
+
+  - name: 查看完整阶段框架
+    feature: pdetail.framework
+    narration: 默认只显示有任务的阶段。打开右上方的完整框架开关，没有任务的阶段也会显示出来，方便检查阶段框架；再点一次切回仅任务。
+    actions:
+      - goto: /task-libraries/2/items
+      - click: { css: ".project-task-display__mode-switch" }
+        label: 完整框架
+        at: 打开右上方的完整框架开关
+      - waitFor: { text: 暂无任务 }
+      - wait: 1.5
+      - click: { css: ".project-task-display__mode-switch" }
+        label: 仅任务
+        at: 再点一次
+    expect:
+      - visible: { css: ".el-table__row" }
+    doc:
+      result: 打开「完整框架」后，没有任务的阶段显示为「暂无任务」；切回「仅任务」后只显示有任务的阶段。
+
+  - name: 查看进度记录
+    feature: pdetail.progress-records
+    narration: 点击任务右侧的进度记录，可以查看这个任务的日报提报、日报更正、实际进度和责任人交接记录，切换页签查看不同类型，看完点击关闭。
+    actions:
+      - goto: /task-libraries/2/items
+      - click: { css: "tr:has-text('OVMTM0001') button:has-text('进度记录')" }
+        label: 进度记录
+        at: 点击任务右侧的进度记录
+      - waitFor: { css: ".el-drawer" }
+      - click: { css: ".el-drawer .el-radio-button:has-text('日报提报')" }
+        label: 日报提报
+        at: 切换页签
+      - click: { css: ".el-drawer .el-radio-button:has-text('实际进度')" }
+        label: 实际进度
+        at: 查看不同类型
+      - click: { role: button, name: 关闭, exact: true }
+        label: 关闭
+        at: 看完点击关闭
+    expect:
+      - visible: { css: ".el-table__row" }
+    doc:
+      result: 右侧弹出「进度记录」面板，按页签分类显示该任务的各类进度记录；点击关闭返回明细列表。
+
+  - name: 维护实际进度
+    feature: pdetail.maintain-progress
+    narration: 任务的实际进度由维护人员确认。点击任务右侧的维护进度，填写新的实际进度和调整说明。
+    actions:
+      - goto: /task-libraries/2/items
+      - click: { css: "tr:has-text('OVMTM0001') button:has-text('维护进度')" }
+        label: 维护进度
+        at: 点击任务右侧的维护进度
+      - waitFor: { text: 维护实际进度 }
+      - fill:
+          target: { css: ".el-dialog .el-form-item:has-text('新的实际进度') input" }
+          text: "30"
+        label: 新的实际进度
+        at: 填写新的实际进度
+      - fill:
+          target: { css: ".el-dialog .el-form-item:has-text('调整说明') textarea" }
+          text: 立项材料已完成评审
+        label: 调整说明
+        at: 和调整说明
+    expect:
+      - text: 维护实际进度
+    doc:
+      result: 弹出「维护实际进度」窗口，填写新的实际进度（0～100）和调整说明。
+      tips: [只有任务库和任务都处于启用、使用中时才能维护进度；任务未下发时，保存前系统会再次确认]
+    ending:
+      cancel:
+        narration: 这里仅作演示，点击取消，不保存。
+        actions:
+          - click: { css: ".el-dialog__footer button:has-text('取消')" }
+            label: 取消
+            at: 点击取消
+      submit:
+        narration: 点击保存进度即可生效。
+        actions:
+          - click: { css: ".el-dialog__footer button:has-text('保存进度')" }
+            label: 保存进度
+            at: 点击保存进度
+        expect:
+          - text: 实际进度已保存
+        doc:
+          result: 系统提示「实际进度已保存」，列表中的实际进度随之更新。
+
+  - name: 任务库检查
+    feature: pdetail.check
+    narration: 点击右上角的任务库检查，系统会检查任务库配置是否完整。检查通过时给出提示，有问题时会逐条列出。
+    actions:
+      - goto: /task-libraries/2/items
+      - click: { role: button, name: 任务库检查, exact: true }
+        at: 点击右上角的任务库检查
+    expect:
+      - visible: [{ text: 任务库检查通过 }, { css: ".el-message-box" }]
+    doc:
+      result: 检查通过时提示「任务库检查通过」；有问题时弹出窗口，逐条列出需要处理的问题。
+
+  - name: 查看申请记录
+    feature: pdetail.app-records
+    narration: 点击申请记录，可以查看这个任务库发起过的全部变更申请，以及每条申请当前的办理节点和状态。
+    actions:
+      - goto: /task-libraries/2/items
+      - click: { role: button, name: 申请记录, exact: true }
+        at: 点击申请记录
+    hold: 1.5
+    expect:
+      - url: /application-records
+      - text: 申请总数
+    doc:
+      result: 进入「申请记录」页面，显示申请总数、办理中和已办结数量，以及每条申请的类型、发起人、当前节点和状态。
+
+  - name: 发起变更申请
+    feature: pdetail.change-request
+    narration: 需要调整任务库时，点击发起申请，可以选择任务库修改、标准工作量变更、项目总工作量变更和阶段占比变更四类申请。这里选择任务库修改申请，进入申请表单，逐条填写变更明细。
+    actions:
+      - goto: /task-libraries/2/items
+      - click: { role: button, name: 发起申请, exact: true }
+        at: 点击发起申请
+      - waitFor: { role: menuitem, name: 任务库修改申请 }
+      - wait: 1.5
+      - click: { role: menuitem, name: 任务库修改申请 }
+        at: 这里选择任务库修改申请
+    hold: 1
+    expect:
+      - url: /task-library-change-applications/new
+      - text: 变更明细
+    doc:
+      result: 进入「新建普通任务库变更申请」页面，可以新增、修改或作废任务，填写变更原因和影响说明后提交审批。
+      tips:
+        - 标准工作量、项目总工作量和阶段占比变更申请需要先通过资格检查，不满足条件时系统会提示原因
+        - 申请人必须参与业务流转，否则页面顶部会提示无法提交
+    ending:
+      cancel:
+        narration: 演示账号没有参与业务流转，页面顶部提示无法提交申请，这里点击返回任务库。
+        actions:
+          - click: { role: button, name: 返回任务库, exact: true }
+            at: 点击返回任务库
+
+  # ================================================================ 任务维护
+  - name: 进入任务维护
+    feature: manage.overview
+    narration: 在项目任务库明细中点击维护任务，进入任务维护页面。左侧是阶段框架，点击某个阶段，右侧只显示该阶段下的任务；点击全部恢复显示所有阶段的任务。
+    actions:
+      - goto: /task-libraries/2/items
+      - click: { role: button, name: 维护任务, exact: true }
+        at: 点击维护任务
+      - click: 'role=button[name="需求调研"s]'
+        label: 需求调研
+        at: 点击某个阶段
+      - waitFor: { text: OVMPD0001 }
+      - wait: 1.2
+      - click: 'role=button[name="全部"s]'
+        label: 全部
+        at: 点击全部
+    expect:
+      - url: /items/manage
+      - text: OVMTM0001
+    doc:
+      result: 进入「任务维护」页面，左侧阶段框架，右侧显示所选阶段下的任务，可按任务、责任人、阶段类型和下发状态进一步筛选。
+
+  - name: 新增任务
+    feature: manage.add-item
+    narration: 新增任务要先在左侧选中一个末级阶段，新增任务按钮才可用。点击新增任务，选择责任人，填写任务内容和标准工作量。
+    actions:
+      - goto: /task-libraries/2/items/manage
+      - click: 'role=button[name="需求调研"s]'
+        label: 需求调研
+        at: 先在左侧选中一个末级阶段
+      - click: { role: button, name: 新增任务, exact: true }
+        at: 点击新增任务
+      - waitFor: { text: 新增任务明细 }
+      - select:
+          target: { css: ".el-dialog .ovm-user-select" }
+          value: 张三（zhangsan）
+        label: 责任人
+        at: 选择责任人
+      - fill:
+          target: { css: ".el-dialog .el-form-item:has(.el-form-item__label:text-is('任务内容')) textarea" }
+          text: 整理客户访谈纪要
+        label: 任务内容
+        at: 填写任务内容
+      - fill:
+          target: { css: ".el-dialog .el-form-item:has(.el-form-item__label:text-is('标准工作量')) input" }
+          text: "4"
+        label: 标准工作量
+        at: 和标准工作量
+    expect:
+      - text: 新增任务明细
+    doc:
+      result: 弹出「新增任务明细」窗口，所属阶段自动带出为选中的阶段，任务编码由系统预先生成。
+      tips: [没有选中末级阶段时「新增任务」按钮不可用]
+    ending:
+      cancel:
+        narration: 这里仅作演示，点击取消。
+        actions:
+          - click: { css: ".el-dialog__footer button:has-text('取消')" }
+            label: 取消
+            at: 点击取消
+      submit:
+        narration: 点击保存，并在确认框中确认。
+        actions:
+          - click: { css: ".el-dialog__footer button:has-text('保存')" }
+            label: 保存
+            at: 点击保存
+          - click: { css: ".el-message-box__btns .el-button--primary" }
+            label: 确认
+            at: 在确认框中确认
+        expect:
+          - text: 任务明细已保存
+        doc:
+          result: 系统提示「任务明细已保存」，新任务出现在所选阶段下。
+
+  # 在线批量录入分五段讲（continue 接着同一个窗口），演示数据：四行任务，第三行故意不填标准工作量，让预校验报错
+  - name: 认识批量录入窗口
+    feature: manage.batch-add
+    narration: 一次要录入多条任务时，先在左侧选中阶段，再点击在线批量录入。窗口分为三块：顶部是加行工具，中间的批量设置用来统一填写多行，下方表格每行一条任务。新开的行会带上左侧选中的阶段，绩效系数跟随阶段默认值，任务豆按工作量和价值系数自动计算。
+    actions:
+      - goto: /task-libraries/2/items/manage
+      - click: 'role=button[name="需求调研"s]'
+        label: 需求调研
+        at: 先在左侧选中阶段
+      - click: { role: button, name: 在线批量录入, exact: true }
+        at: 再点击在线批量录入
+      - waitFor: { text: 在线批量录入任务 }
+      - hover: { css: ".task-item-batch-row-adder" }
+        label: 加行工具
+        at: 顶部是加行工具
+      - hover: { css: ".task-item-batch-bulk" }
+        label: 批量设置
+        at: 中间的批量设置
+      - hover: { css: ".task-item-batch-drawer .el-table__body .el-table__row" }
+        label: 任务行
+        at: 下方表格每行一条任务
+      - hover: { css: ".task-item-batch-drawer .el-table__body .el-select" }
+        label: 阶段
+        at: 新开的行会带上
+    expect:
+      - text: 共 1 行
+    doc:
+      result: 打开「在线批量录入任务」窗口，默认有一行，阶段已带出为左侧选中的阶段。
+      tips:
+        - 打开窗口前先在左侧选中阶段，新行会自动带上这个阶段
+        - 预览阶段显示的编码只是预计编码，不占用正式编码
+
+  - name: 三种加行方式
+    feature: manage.batch-add
+    continue: true
+    narration: 先填写第一行的任务内容和标准工作量。要加空行时，在新增后面填写行数，再点击添加。如果下一行和上一行差不多，点击这一行操作列的复制图标，会把上一行的内容和设置整行复制过来，再改任务内容即可。也可以勾选若干行，点击复制所选行，复制出的行会追加到表格末尾。
+    actions:
+      - fill:
+          target: { placeholder: 请输入任务内容, nth: 0 }
+          text: 整理客户访谈纪要
+        label: 任务内容
+        at: 先填写第一行的任务内容
+      - fill:
+          target: { css: ".task-item-batch-drawer [data-testid^='batch-row-workload-'] input", nth: 0 }
+          text: "4"
+        label: 标准工作量
+        at: 和标准工作量
+      - fill:
+          target: { css: "[data-testid='batch-add-row-count'] input" }
+          text: "2"
+        label: 新增行数
+        at: 填写行数
+      - click: { role: button, name: 添加, exact: true }
+        at: 再点击添加
+      - click: { role: button, name: 复制上一行到第 2 行, exact: true }
+        label: 复制上一行
+        at: 点击这一行操作列的复制图标
+      - fill:
+          target: { placeholder: 请输入任务内容, nth: 1 }
+          text: 输出需求调研报告
+        label: 任务内容
+        at: 再改任务内容即可
+      - click: { css: ".task-item-batch-drawer .el-table__body .el-checkbox", nth: 0 }
+        label: 勾选第 1 行
+        at: 勾选若干行
+      - click: { role: button, name: 复制所选行, exact: true }
+        at: 点击复制所选行
+      - fill:
+          target: { placeholder: 请输入任务内容, nth: 3 }
+          text: 整理访谈问题清单
+        label: 任务内容
+      - fill:
+          target: { placeholder: 请输入任务内容, nth: 2 }
+          text: 编写需求规格说明书
+        label: 任务内容
+    hold: 1
+    expect:
+      - text: 共 4 行
+    doc:
+      result: 表格共 4 行：第 2 行由「复制上一行」得到，第 4 行由「复制所选行」追加到末尾，再分别修改任务内容。
+      tips:
+        - 「新增 N 行」一次最多 50 行
+        - 行内复制图标是把上一行整行复制到当前行（会覆盖当前行）；「复制所选行」是把勾选的行复制后追加到末尾
+
+  - name: 批量设置
+    feature: manage.batch-add
+    continue: true
+    narration: 四行都还没有责任人。在批量设置里选择责任人，默认应用到全部行，右侧会提示当前作用于几行，四行的责任人一次填好。注意仅填空白项默认是打开的，它会保护已经填过的值：比如每行价值系数默认是一，这时统一设置成一点二，表格不会变化。需要整列覆盖时，先关掉仅填空白项，再设置成一点三，四行都会变成一点三。状态一项不受这个开关限制，会直接覆盖。只想改其中几行，就把应用到切换为已选行，并勾选目标行。最后点击清空设置，只清掉批量设置本身，已写入表格的值保持不变。
+    actions:
+      - select:
+          target: { css: ".task-item-batch-bulk .ovm-user-select" }
+          value: 张三（zhangsan）
+        label: 责任人
+        at: 在批量设置里选择责任人
+      - hover: { css: ".task-item-batch-bulk__feedback" }
+        label: 当前作用于 4 行
+        at: 当前作用于几行
+      - hover: { css: ".task-item-batch-bulk__scope .el-switch" }
+        label: 仅填空白项
+        at: 注意仅填空白项
+      - fill:
+          target: { css: "[data-testid='batch-bulk-factor'] input" }
+          text: "1.2"
+        label: 价值系数
+        at: 统一设置成一点二
+      - press: Enter
+      - hover: { css: ".task-item-batch-drawer [data-testid^='batch-row-factor-']", nth: 0 }
+        label: 价值系数
+        at: 表格不会变化
+      - click: { css: ".task-item-batch-bulk__scope .el-switch" }
+        label: 仅填空白项
+        at: 先关掉仅填空白项
+      - fill:
+          target: { css: "[data-testid='batch-bulk-factor'] input" }
+          text: "1.3"
+        label: 价值系数
+        at: 再设置成一点三
+      - press: Enter
+      - hover: { css: ".task-item-batch-bulk__scope .el-segmented" }
+        label: 应用到
+        at: 把应用到切换为已选行
+      - click: { role: button, name: 清空设置, exact: true }
+        at: 最后点击清空设置
+    hold: 1
+    expect:
+      - text: 当前作用于 4 行
+    doc:
+      result: 四行的责任人一次填好；关闭「仅填空白项」后，四行的价值系数统一改为 1.3；清空设置后表格中的值保持不变。
+      tips:
+        - 「仅填空白项」默认打开，只填没有值的单元格；价值系数每行默认是 1.0，不算空白，要统一修改需先关掉这个开关
+        - 「状态」不受「仅填空白项」限制，选择后直接覆盖目标行
+        - 「应用到」选「全部行」时，之后新加的行也会带上这些设置；选「已选行」时只作用于勾选的行
+        - 「清空设置」只清空批量设置本身，不会清掉已经写入表格的值
+
+  - name: 预校验
+    feature: manage.batch-add
+    continue: true
+    narration: 填完后点击预校验。每行的预览结果会显示预计编码，或者具体哪里有问题，上方统计通过和待修正的行数。这里第三行漏填了标准工作量，所以确认新增按钮仍是灰色。补上后预览结果会清空，需要重新点击预校验，全部通过后才能确认新增。
+    actions:
+      - click: { role: button, name: 预校验, exact: true }
+        at: 填完后点击预校验
+      - waitFor: { text: 待修正 1 行 }
+      - hover: { css: ".task-item-batch-drawer .batch-result .is-error" }
+        label: 预览结果
+        at: 这里第三行漏填了
+      - fill:
+          target: { css: ".task-item-batch-drawer [data-testid^='batch-row-workload-'] input", nth: 2 }
+          text: "6"
+        label: 标准工作量
+        at: 补上后
+      - press: Tab
+      - waitFor: { text: 等待预览 }
+      - click: { role: button, name: 预校验, exact: true }
+        at: 需要重新点击预校验
+    expect:
+      - text: 全部通过，可整批保存
+    doc:
+      result: 第一次预校验提示第 3 行待修正；补填标准工作量后重新预校验，四行全部通过，每行显示预计编码。
+      tips:
+        - 预校验后再修改任何单元格，预览结果都会清空，需要重新预校验
+        - 预校验没有全部通过时，「确认新增」按钮不可用
+
+  - name: 确认批量新增
+    feature: manage.batch-add
+    continue: true
+    narration: 全部通过后，底部按钮显示确认新增几条。点击后系统会再次确认，保存时重新分配正式编码；任何一行保存失败，整批都会回滚，不会只存一半。
+    actions:
+      - hover: { role: button, name: 确认新增 4 条, exact: true }
+        label: 确认新增
+        at: 底部按钮显示确认新增几条
+    expect:
+      - visible: { role: button, name: 确认新增 4 条, exact: true }
+    doc:
+      result: 「确认新增 4 条」按钮变为可用。
+      tips: [保存时重新分配正式编码，正式编码可能与预计编码不同；任一行保存失败，整批任务都会回滚]
+    ending:
+      cancel:
+        narration: 这里仅作演示，点击取消关闭窗口，不保存。
+        actions:
+          - click: { role: button, name: 取消, exact: true }
+            label: 取消
+            at: 点击取消
+      submit:
+        narration: 点击确认新增，并在确认框中确认。
+        actions:
+          - click: { role: button, name: 确认新增 4 条, exact: true }
+            label: 确认新增
+            at: 点击确认新增
+          - click: { css: ".el-message-box__btns .el-button--primary" }
+            label: 确认新增
+            at: 在确认框中确认
+        expect:
+          - text: 已新增 4 条任务
+        doc:
+          result: 系统提示「已新增 4 条任务」，新任务出现在所选阶段下。
+
+  - name: 编辑任务
+    feature: manage.edit-item
+    narration: 修改任务时，点击任务右侧的更多，选择编辑，可以调整任务内容、标准工作量和价值系数。已下发的任务不能修改标准工作量，需要通过标准工作量变更申请调整。
+    actions:
+      - goto: /task-libraries/2/items/manage
+      - click: { css: "tr:has-text('OVMTM0008') .el-dropdown" }
+        label: 更多
+        at: 点击任务右侧的更多
+      - click: { role: menuitem, name: 编辑, exact: true }
+        at: 选择编辑
+      - waitFor: { text: 编辑任务明细 }
+      - fill:
+          target: { css: ".el-dialog .el-form-item:has(.el-form-item__label:text-is('标准工作量')) input" }
+          text: "1.5"
+        label: 标准工作量
+        at: 标准工作量和价值系数
+    expect:
+      - text: 编辑任务明细
+    doc:
+      result: 弹出「编辑任务明细」窗口，可修改任务内容、标准工作量、价值系数等信息。
+      tips: [已下发的任务，任务编码、责任人、标准工作量和停用状态不可修改]
+    ending:
+      cancel:
+        narration: 这里不保存，点击取消。
+        actions:
+          - click: { css: ".el-dialog__footer button:has-text('取消')" }
+            label: 取消
+            at: 点击取消
+      submit:
+        narration: 点击保存，并在确认框中确认。
+        actions:
+          - click: { css: ".el-dialog__footer button:has-text('保存')" }
+            label: 保存
+            at: 点击保存
+          - click: { css: ".el-message-box__btns .el-button--primary" }
+            label: 确认
+            at: 在确认框中确认
+        expect:
+          - text: 任务明细已保存
+        doc:
+          result: 系统提示「任务明细已保存」。
+
+  - name: 更换责任人
+    feature: manage.handover
+    narration: 已下发的任务如果要交给别人，在更多中选择更换责任人，选择新的责任人并填写交接说明。保存后系统会为新责任人生成承接任务。
+    actions:
+      - goto: /task-libraries/2/items/manage
+      - click: { css: "tr:has-text('OVMTM0005') .el-dropdown" }
+        label: 更多
+        at: 在更多中
+      - click: { role: menuitem, name: 更换责任人, exact: true }
+        at: 选择更换责任人
+      - waitFor: { css: ".el-drawer .ovm-user-select" }
+      - select:
+          target: { css: ".el-drawer .ovm-user-select" }
+          value: 张三（zhangsan）
+        label: 新责任人
+        at: 选择新的责任人
+      - fill:
+          target: { css: ".el-drawer .el-form-item:has-text('交接说明') textarea" }
+          text: 原责任人调岗，工作移交
+        label: 交接说明
+        at: 并填写交接说明
+    expect:
+      - text: 新任务分配
+    doc:
+      result: 右侧弹出「更换责任人」面板，左边是原任务的收尾情况，右边为新责任人分配承接任务的标准时间和进度。
+      tips: [只有已下发的任务可以更换责任人；在「更多 › 交接记录」中可以查看历次交接]
+    ending:
+      cancel:
+        narration: 这里仅作演示，点击取消，并确认放弃填写的内容。
+        actions:
+          - click: { role: button, name: 取消, exact: true }
+            label: 取消
+            at: 点击取消
+          - click: { css: ".el-message-box__btns button:has-text('放弃修改')" }
+            label: 放弃修改
+            at: 并确认放弃
+
+  - name: 停用任务
+    feature: manage.toggle-item
+    narration: 不再执行的任务可以停用。在未下发任务的更多中选择停用，系统会弹出确认框。已下发的任务不能停用。
+    actions:
+      - goto: /task-libraries/2/items/manage
+      - click: { css: "tr:has-text('OVMTM0008') .el-dropdown" }
+        label: 更多
+        at: 在未下发任务的更多中
+      - click: { role: menuitem, name: 停用, exact: true }
+        at: 选择停用
+    expect:
+      - text: 停用任务明细
+    doc:
+      result: 弹出「停用任务明细」确认框。
+      tips: [已下发的任务「停用」显示为灰色，不能停用]
+    ending:
+      cancel:
+        narration: 这里点击取消。
+        actions:
+          - click: { css: ".el-message-box__btns button:has-text('取消')" }
+            label: 取消
+            at: 点击取消
+        doc:
+          result: 弹出「停用任务明细」确认框；点击取消后任务保持启用。
+      submit:
+        narration: 确认后任务停用。
+        actions:
+          - click: { css: ".el-message-box__btns .el-button--primary" }
+            label: 停用
+            at: 确认后
+        expect:
+          - text: 任务明细已停用
+        doc:
+          result: 系统提示「任务明细已停用」。
+
+  # ================================================================ 阶段维护
+  - name: 维护阶段结构
+    feature: stage.structure
+    narration: 在项目任务库明细中点击维护阶段，进入阶段维护页面。这里只修改当前任务库的阶段，不影响阶段模板。选中一个阶段后点击新增同级，填写阶段编码和阶段名称，所有修改要点击保存阶段才会生效。
+    actions:
+      - goto: /task-libraries/2/items
+      - click: { role: button, name: 维护阶段, exact: true }
+        at: 点击维护阶段
+      - click: { css: ".library-stage-tree .el-tree-node__content:has(strong:text-is('需求调研'))" }
+        label: 需求调研
+        at: 选中一个阶段
+      - click: { role: button, name: 新增同级, exact: true }
+        at: 点击新增同级
+      - fill:
+          target: { css: ".library-stage-form .el-form-item:has(.el-form-item__label:text-is('阶段编码')) input" }
+          text: PD-INTERVIEW
+        label: 阶段编码
+        at: 填写阶段编码
+      - fill:
+          target: { css: ".library-stage-form .el-form-item:has(.el-form-item__label:text-is('阶段名称')) input" }
+          text: 客户访谈
+        label: 阶段名称
+        at: 和阶段名称
+    expect:
+      - url: /stages
+      - text: 客户访谈
+    doc:
+      result: 阶段树中新增一个同级阶段，右侧表单显示它的编码、名称、类型和顺序。
+      tips:
+        - 阶段的增删改要点击「保存阶段」后才生效，点击「刷新」可放弃未保存的修改
+        - 启用末级阶段的占比合计必须等于 100%，否则不能保存
+    ending:
+      cancel:
+        narration: 这里不保存，点击刷新放弃修改。
+        actions:
+          - click: { role: button, name: 刷新, exact: true }
+            at: 点击刷新
+        doc:
+          result: 阶段树中新增一个同级阶段；点击刷新后放弃修改，阶段树恢复原样。
+      submit:
+        narration: 点击保存阶段，并在确认框中确认。
+        actions:
+          - click: { role: button, name: 保存阶段, exact: true }
+            at: 点击保存阶段
+          - click: { css: ".el-message-box__btns .el-button--primary" }
+            label: 确认
+            at: 在确认框中确认
+        expect:
+          - text: 阶段已保存
+        doc:
+          result: 系统提示「阶段已保存」。
+
+  - name: 调整阶段占比
+    feature: stage.ratio
+    narration: 阶段占比在右侧表单中修改，启用末级阶段的占比合计必须等于百分之百，右上角会实时显示合计。修改占比需要是该阶段的项目角色，当前演示账号没有这个权限，所以占比输入框是灰色的，右上角也没有保存占比按钮。有权限的账号修改后点击保存占比即可。
+    actions:
+      - goto: /task-libraries/2/stages
+      - click: { css: ".library-stage-tree .el-tree-node__content:has(strong:text-is('需求调研'))" }
+        label: 需求调研
+        at: 阶段占比在右侧表单中修改
+      - hover: { css: ".library-stage-stats" }
+        label: 启用叶子占比
+        at: 右上角会实时显示合计
+      - hover: { css: ".stage-ratio-editor" }
+        label: 阶段占比
+        at: 所以占比输入框是灰色的
+    hold: 1
+    expect:
+      - visible: { css: ".stage-ratio-editor .el-input-number.is-disabled" }
+    doc:
+      result: 当前账号没有修改占比的权限，占比输入框不可编辑，页面上也没有「保存占比」按钮。
+      tips:
+        - 修改阶段占比需要是对应阶段的项目角色
+        - 有权限时修改占比后点击「保存占比」；启用末级阶段的占比合计必须等于 100%，否则不能保存
+
+  - name: 发起占比调整申请
+    feature: stage.ratio-request
+    narration: 没有直接修改权限的人，可以点击调整占比申请，走审批流程调整。发起申请要求当前账号参与业务流转，演示账号没有参与，系统会提示无法发起。有资格的账号会进入申请表单，填写调整后的占比并提交。
+    actions:
+      - goto: /task-libraries/2/stages
+      - click: { role: button, name: 调整占比申请, exact: true }
+        at: 可以点击调整占比申请
+    expect:
+      - text: 未参与业务流转
+    doc:
+      result: 当前账号没有参与业务流转，系统提示「当前申请人不存在、已停用或未参与业务流转」，无法发起申请。
+      tips: [有资格的账号点击后进入阶段占比变更申请表单，填写调整后的占比并提交审批]
+
+  # ================================================================ 非项目任务库明细
+  - name: 查看售前任务库明细
+    feature: npdetail.overview
+    narration: 售前、售后、部门和临时任务库没有阶段框架，点击明细进入的是非项目任务库明细。页面上方显示任务总数和工作量统计，可以按任务和任务类型筛选，比如选择技术后点击查询。
+    actions:
+      - goto: /task-libraries
+      - click: { css: "tr:has-text('PRE_SALE_2026') button:has-text('明细')" }
+        label: 明细
+        at: 点击明细进入的是
+      - select:
+          target: { css: ".el-select:has(.el-select__placeholder:has-text('请选择任务类型'))" }
+          value: 技术
+        label: 任务类型
+        at: 比如选择技术
+      - click: { role: button, name: 查询, exact: true }
+        at: 后点击查询
+    hold: 1.5
+    expect:
+      - url: /non-project-items
+      - text: OVMRD0002
+    doc:
+      result: 进入「非项目任务库明细」页面，列表只显示任务类型为「技术」的任务。
+
+  - name: 维护非项目任务进度
+    feature: npdetail.maintain-progress
+    narration: 部门、售前和售后任务库的任务也可以维护实际进度。点击任务右侧的维护进度，填写新的实际进度和调整说明。
+    actions:
+      - goto: /task-libraries/1/non-project-items
+      - click: { css: "tr:has-text('OVMRD0002') button:has-text('维护进度')" }
+        label: 维护进度
+        at: 点击任务右侧的维护进度
+      - waitFor: { text: 维护实际进度 }
+      - fill:
+          target: { css: ".el-dialog .el-form-item:has-text('新的实际进度') input" }
+          text: "50"
+        label: 新的实际进度
+        at: 填写新的实际进度
+      - fill:
+          target: { css: ".el-dialog .el-form-item:has-text('调整说明') textarea" }
+          text: 方案初稿已提交客户
+        label: 调整说明
+        at: 和调整说明
+    expect:
+      - text: 维护实际进度
+    doc:
+      result: 弹出「维护实际进度」窗口，填写新的实际进度和调整说明。
+      tips: [临时任务库的任务不能维护进度]
+    ending:
+      cancel:
+        narration: 这里点击取消，不保存。
+        actions:
+          - click: { css: ".el-dialog__footer button:has-text('取消')" }
+            label: 取消
+            at: 点击取消
+      submit:
+        narration: 点击保存进度即可生效。
+        actions:
+          - click: { css: ".el-dialog__footer button:has-text('保存进度')" }
+            label: 保存进度
+            at: 点击保存进度
+        expect:
+          - text: 实际进度已保存
+        doc:
+          result: 系统提示「实际进度已保存」。
+
+  - name: 新增非项目任务
+    feature: npdetail.add-item
+    narration: 点击新增任务，选择所属项目、任务类型和责任人，再填写任务内容和标准工作量，任务编码会根据业务归属和任务类型自动生成。
+    actions:
+      - goto: /task-libraries/1/non-project-items
+      - click: { role: button, name: 新增任务, exact: true }
+        at: 点击新增任务
+      - waitFor: { text: 新增任务明细 }
+      - select:
+          target: { css: ".el-dialog .el-form-item:has(.el-form-item__label:text-is('所属项目')) .el-select" }
+          value: 产值绩效管理系统
+        label: 所属项目
+        at: 选择所属项目
+      - select:
+          target: { css: ".el-dialog .el-form-item:has(.el-form-item__label:text-is('任务类型')) .el-select" }
+          value: 技术
+        label: 任务类型
+        at: 任务类型和责任人
+      - select:
+          target: { css: ".el-dialog .ovm-user-select" }
+          value: 张三（zhangsan）
+        label: 责任人
+      - fill:
+          target: { css: ".el-dialog .el-form-item:has(.el-form-item__label:text-is('任务内容')) textarea" }
+          text: 编写售前技术方案
+        label: 任务内容
+        at: 再填写任务内容
+      - fill:
+          target: { css: ".el-dialog .el-form-item:has(.el-form-item__label:text-is('标准工作量')) input" }
+          text: "8"
+        label: 标准工作量
+        at: 和标准工作量
+    expect:
+      - text: 新增任务明细
+    doc:
+      result: 弹出「新增任务明细」窗口，选择业务归属和任务类型后，系统自动生成预计编码。
+    ending:
+      cancel:
+        narration: 这里仅作演示，点击取消。
+        actions:
+          - click: { css: ".el-dialog__footer button:has-text('取消')" }
+            label: 取消
+            at: 点击取消
+      submit:
+        narration: 点击保存，并在确认框中确认。
+        actions:
+          - click: { css: ".el-dialog__footer button:has-text('保存')" }
+            label: 保存
+            at: 点击保存
+          - click: { css: ".el-message-box__btns .el-button--primary" }
+            label: 确认
+            at: 在确认框中确认
+        expect:
+          - text: 任务明细已保存
+        doc:
+          result: 系统提示「任务明细已保存」，新任务出现在列表中。
+
+  - name: 批量新增非项目任务
+    feature: npdetail.batch-add
+    narration: 售前任务库点击批量新增，打开的是同一个批量录入窗口，加行、复制、批量设置和预校验的用法都和项目任务库一样。区别是没有阶段列，改为每行选择任务类型和所属项目，这两项同样可以在批量设置里统一设置，比如把全部行的任务类型设为技术。
+    actions:
+      - goto: /task-libraries/1/non-project-items
+      - click: { role: button, name: 批量新增, exact: true }
+        at: 点击批量新增
+      - waitFor: { text: 在线批量录入任务 }
+      - click: { role: button, name: 添加, exact: true }
+        at: 加行、复制
+      - fill:
+          target: { placeholder: 请输入任务内容, nth: 0 }
+          text: 编写售前技术方案
+        label: 任务内容
+        at: 区别是没有阶段列
+      - fill:
+          target: { placeholder: 请输入任务内容, nth: 1 }
+          text: 准备产品演示环境
+        label: 任务内容
+      - select:
+          target: { css: ".task-item-batch-bulk label:has-text('任务类型') .el-select" }
+          value: 技术
+        label: 任务类型
+        at: 比如把全部行的任务类型设为技术
+    hold: 1
+    expect:
+      - text: 当前作用于 2 行
+    doc:
+      result: 打开「在线批量录入任务」窗口；售前任务库没有阶段列，每行需要选择任务类型和所属项目，批量设置后两行的任务类型都为「技术」。
+      tips: [加行、复制、批量设置、预校验的用法与项目任务库相同]
+    ending:
+      cancel:
+        narration: 这里不保存，点击取消。
+        actions:
+          - click: { role: button, name: 取消, exact: true }
+            label: 取消
+            at: 点击取消
+
+  - name: 编辑非项目任务
+    feature: npdetail.edit-item
+    narration: 点击任务右侧的编辑，可以修改任务内容、标准工作量等信息。已下发任务的编码和责任人不能修改。
+    actions:
+      - goto: /task-libraries/1/non-project-items
+      - click: { css: "tr:has-text('OVMRD0003') button:has-text('编辑')" }
+        label: 编辑
+        at: 点击任务右侧的编辑
+      - waitFor: { text: 编辑任务明细 }
+      - fill:
+          target: { css: ".el-dialog .el-form-item:has(.el-form-item__label:text-is('标准工作量')) input" }
+          text: "2"
+        label: 标准工作量
+        at: 标准工作量等信息
+    expect:
+      - text: 编辑任务明细
+    doc:
+      result: 弹出「编辑任务明细」窗口，修改后保存即可。
+    ending:
+      cancel:
+        narration: 这里点击取消，不保存。
+        actions:
+          - click: { css: ".el-dialog__footer button:has-text('取消')" }
+            label: 取消
+            at: 点击取消
+      submit:
+        narration: 点击保存，并在确认框中确认。
+        actions:
+          - click: { css: ".el-dialog__footer button:has-text('保存')" }
+            label: 保存
+            at: 点击保存
+          - click: { css: ".el-message-box__btns .el-button--primary" }
+            label: 确认
+            at: 在确认框中确认
+        expect:
+          - text: 任务明细已保存
+        doc:
+          result: 系统提示「任务明细已保存」。
+
+  - name: 替换临时任务
+    feature: npdetail.replace
+    narration: 临时任务库用于先登记、后补正式任务。在临时任务库明细中点击任务右侧的替换，搜索并选中对应的正式任务。替换后不可撤销，执行人、日报和有效工时会保留到正式任务上。
+    actions:
+      - goto: /task-libraries/3/non-project-items
+      - click: { css: "tr:has-text('ZKTY20260001') button:has-text('替换')" }
+        label: 替换
+        at: 点击任务右侧的替换
+      - waitFor: { text: 替换为正式任务 }
+      - fill:
+          target: { css: ".el-dialog input[placeholder*='正式任务编码']" }
+          text: APDEPT20260001
+        label: 正式任务
+        at: 搜索并选中
+      - click: { css: ".el-dialog button:has-text('查询')" }
+        label: 查询
+      - click: { css: ".el-dialog tr:has-text('APDEPT20260001') .el-radio" }
+        label: APDEPT20260001
+        at: 对应的正式任务
+    expect:
+      - text: 替换为正式任务
+    doc:
+      result: 弹出「替换为正式任务」窗口，选中正式任务后「确认替换」变为可用。
+      tips: [替换后不可撤销；执行人、日报和有效工时保留原临时任务事实，产值和月绩效使用所选正式任务的标准与归属]
+    ending:
+      cancel:
+        narration: 这里仅作演示，点击取消。
+        actions:
+          - click: { css: ".el-dialog__footer button:has-text('取消')" }
+            label: 取消
+            at: 点击取消
+
+  - name: 发起售前任务库修改申请
+    feature: npdetail.change-request
+    narration: 售前和售后任务库也可以发起任务库修改申请。点击发起申请，选择任务库修改申请，进入申请表单。
+    actions:
+      - goto: /task-libraries/1/non-project-items
+      - click: { role: button, name: 发起申请, exact: true }
+        at: 点击发起申请
+      - click: { role: menuitem, name: 任务库修改申请 }
+        at: 选择任务库修改申请
+    hold: 1
+    expect:
+      - url: /task-library-change-applications/new
+      - text: 变更明细
+    doc:
+      result: 进入「新建普通任务库变更申请」页面。
+      tips: [申请人必须参与业务流转，否则页面顶部会提示无法提交]
+    ending:
+      cancel:
+        narration: 演示账号同样没有提交申请的资格，这里点击返回任务库。
+        actions:
+          - click: { role: button, name: 返回任务库, exact: true }
+            at: 点击返回任务库

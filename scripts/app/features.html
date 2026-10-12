@@ -1,0 +1,310 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>功能清单确认</title>
+<style>
+  :root {
+    --bg: #f4f5f7; --panel: #fff; --border: #e2e5ea; --text: #1c1f23; --muted: #6b7280;
+    --primary: #2563eb; --primary-dark: #1d4ed8; --ok: #16794c; --warn: #a35b00; --err: #b42318; --code-bg: #14171c;
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--text); font: 14px/1.6 system-ui, -apple-system, "Microsoft YaHei", sans-serif; }
+  header {
+    background: #fff; border-bottom: 1px solid var(--border); padding: 14px 24px;
+    display: flex; align-items: center; gap: 14px; position: sticky; top: 0; z-index: 10;
+  }
+  header h1 { font-size: 16px; margin: 0; font-weight: 600; }
+  header .sub { color: var(--muted); font-size: 13px; }
+  header .spacer { flex: 1; }
+  header a { color: var(--muted); font-size: 13px; text-decoration: none; }
+  select { padding: 5px 8px; border: 1px solid var(--border); border-radius: 6px; background: #fff; font: inherit; }
+  .pill { font-size: 12px; padding: 3px 10px; border-radius: 20px; background: #eef1f5; color: var(--muted); white-space: nowrap; }
+  .pill.ok { background: #e6f5ee; color: var(--ok); }
+  .pill.warn { background: #fff4e5; color: var(--warn); }
+  .pill.err { background: #fdeceb; color: var(--err); }
+  .pill.info { background: #e7f0ff; color: var(--primary); }
+
+  main { padding: 18px 24px 120px; max-width: 1280px; margin: 0 auto; }
+  .bar {
+    display: flex; flex-wrap: wrap; gap: 10px; align-items: center;
+    background: #fff; border: 1px solid var(--border); border-radius: 10px; padding: 12px 16px; margin-bottom: 16px;
+  }
+  .bar .stat { color: var(--muted); font-size: 13px; }
+  .bar .stat b { color: var(--text); }
+  .bar .spacer { flex: 1; }
+  button {
+    font: inherit; font-size: 13px; padding: 6px 14px; border-radius: 6px; cursor: pointer;
+    border: 1px solid var(--border); background: #fff; color: var(--text);
+  }
+  button:hover { border-color: #c5cad3; }
+  button.primary { background: var(--primary); border-color: var(--primary); color: #fff; }
+  button.primary:hover { background: var(--primary-dark); }
+  button:disabled { opacity: .5; cursor: not-allowed; }
+
+  .page { background: #fff; border: 1px solid var(--border); border-radius: 10px; margin-bottom: 16px; overflow: hidden; }
+  .page > h2 {
+    margin: 0; font-size: 14px; padding: 12px 16px; border-bottom: 1px solid var(--border); background: #fafbfc;
+    display: flex; gap: 10px; align-items: baseline;
+  }
+  .page > h2 small { color: var(--muted); font-weight: normal; font-size: 12px; }
+  table { width: 100%; border-collapse: collapse; }
+  th, td { text-align: left; padding: 10px 12px; border-bottom: 1px solid #f0f1f4; vertical-align: top; font-size: 13px; }
+  th { color: var(--muted); font-weight: normal; font-size: 12px; background: #fff; }
+  tr:last-child td { border-bottom: none; }
+  tr.off td:not(:first-child) { opacity: .5; }
+  tr.removed td { text-decoration: line-through; }
+  td.chk { width: 36px; }
+  td.chk input { width: 16px; height: 16px; cursor: pointer; }
+  .name { font-weight: 600; }
+  .desc { color: var(--muted); font-size: 12px; margin-top: 2px; }
+  .meta { color: var(--muted); font-size: 12px; }
+  .meta div + div { margin-top: 2px; }
+  .blocked { color: var(--warn); font-size: 12px; margin-top: 4px; }
+  .tag { display: inline-block; font-size: 11px; padding: 1px 7px; border-radius: 4px; margin-left: 6px; vertical-align: 1px; }
+  .tag.read { background: #eef1f5; color: var(--muted); }
+  .tag.write { background: #fff4e5; color: var(--warn); }
+  .tag.new { background: #e7f0ff; color: var(--primary); }
+  .tag.removed { background: #fdeceb; color: var(--err); }
+  .scene-ok { color: var(--ok); font-size: 12px; }
+  .scene-miss { color: var(--err); font-size: 12px; }
+
+  footer {
+    position: fixed; left: 0; right: 0; bottom: 0; background: #fff; border-top: 1px solid var(--border);
+    padding: 12px 24px; display: flex; gap: 10px; align-items: center; z-index: 10;
+  }
+  footer .msg { color: var(--muted); font-size: 13px; flex: 1; }
+  #log {
+    display: none; background: var(--code-bg); color: #d6dae0; font: 12px/1.55 Consolas, monospace;
+    border-radius: 10px; padding: 12px 14px; height: 320px; overflow: auto; white-space: pre-wrap; margin-bottom: 16px;
+  }
+  #log .err { color: #ff9b8f; }
+  .empty { text-align: center; color: var(--muted); padding: 60px 0; }
+</style>
+</head>
+<body>
+<header>
+  <h1>功能清单确认</h1>
+  <span class="sub" id="module"></span>
+  <select id="fileSel" style="display:none"></select>
+  <span class="pill" id="state">加载中</span>
+  <span class="spacer"></span>
+  <a href="/">返回生成器</a>
+</header>
+
+<main>
+  <div class="bar" id="bar" style="display:none">
+    <span class="stat" id="stat"></span>
+    <span class="spacer"></span>
+    <button data-pick="read">只选只读功能</button>
+    <button data-pick="all">全选可演示</button>
+    <button data-pick="none">全不选</button>
+  </div>
+  <pre id="log"></pre>
+  <div id="pages"><div class="empty">加载中…</div></div>
+</main>
+
+<footer>
+  <span class="msg" id="msg"></span>
+  <button id="btnSave">保存草稿</button>
+  <button class="primary" id="btnConfirm">确认清单</button>
+  <button id="btnDry" disabled>演练并出手册</button>
+  <button class="primary" id="btnProduce" disabled>出片</button>
+</footer>
+
+<script>
+const $ = (s) => document.querySelector(s);
+const esc = (s) => String(s == null ? '' : s).replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
+const MODE = { cancel: '填完取消，不保存', submit: '真实提交' };
+
+let file = new URLSearchParams(location.search).get('f') || '';
+let data = null;
+let dirty = false;
+
+async function api(url, body) {
+  const r = await fetch(url, body ? { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) } : {});
+  const j = await r.json().catch(() => ({}));
+  if (!r.ok) throw new Error(j.error || ('请求失败 ' + r.status));
+  return j;
+}
+
+async function init() {
+  const list = await api('/api/features/list');
+  if (!list.length) {
+    $('#pages').innerHTML = '<div class="empty">项目目录下还没有 *.features.yaml 功能清单</div>';
+    $('#state').textContent = '无清单';
+    return;
+  }
+  if (!file || !list.some((x) => x.file === file)) file = list[0].file;
+  const sel = $('#fileSel');
+  if (list.length > 1) {
+    sel.style.display = '';
+    sel.innerHTML = list.map((x) => '<option value="' + esc(x.file) + '">' + esc(x.module || x.file) + '</option>').join('');
+    sel.value = file;
+    sel.onchange = () => { if (!dirty || confirm('有未保存的修改，确定切换？')) { file = sel.value; load(); } else sel.value = file; };
+  }
+  await load();
+}
+
+async function load(fresh) {
+  data = fresh || await api('/api/features?f=' + encodeURIComponent(file));
+  dirty = false;
+  history.replaceState(null, '', '?f=' + encodeURIComponent(file));
+  render();
+}
+
+function sceneCell(f) {
+  if (!data.scriptFound) return '<span class="meta">—</span>';
+  const s = data.scenes[f.id];
+  if (s && s.length) return '<span class="scene-ok">已有场景 ' + s.length + '</span><div class="desc">' + s.map(esc).join('、') + '</div>';
+  return f.include ? '<span class="scene-miss">缺场景</span>' : '<span class="meta">无场景</span>';
+}
+
+function render() {
+  $('#module').textContent = data.module + (data.generatedBy ? ' · 盘点：' + data.generatedBy + (data.generatedAt ? '（' + data.generatedAt + '）' : '') : '');
+  $('#bar').style.display = '';
+  const rows = data.pages.map((p) => {
+    const feats = data.features.filter((f) => f.page === p.id);
+    if (!feats.length) return '';
+    return '<section class="page"><h2>' + esc(p.name) + '<small>' + esc(p.entry || p.route) + '</small></h2>'
+      + '<table><thead><tr><th></th><th>功能</th><th style="width:170px">写数据怎么处理</th><th style="width:300px">条件与前提</th><th style="width:150px">脚本场景</th></tr></thead><tbody>'
+      + feats.map((f) => {
+        const tags = '<span class="tag ' + f.kind + '">' + (f.kind === 'write' ? '写数据' : '只读') + '</span>'
+          + (f.status === 'new' ? '<span class="tag new">新增</span>' : '')
+          + (f.status === 'removed' ? '<span class="tag removed">已从系统中消失</span>' : '');
+        const mode = f.kind === 'write'
+          ? '<select data-mode="' + esc(f.id) + '"' + (f.include ? '' : ' disabled') + '>'
+            + Object.entries(MODE).map(([k, v]) => '<option value="' + k + '"' + (f.writeMode === k ? ' selected' : '') + '>' + v + '</option>').join('')
+            + '</select>'
+          : '<span class="meta">—</span>';
+        const meta = [
+          f.permission && '权限：' + esc(f.permission),
+          f.when && '显示条件：' + esc(f.when),
+          f.requires && '演示前提：' + esc(f.requires),
+          f.source && '<span title="源码位置">' + esc(f.source) + '</span>',
+        ].filter(Boolean).map((x) => '<div>' + x + '</div>').join('');
+        return '<tr class="' + (f.include ? '' : 'off') + (f.status === 'removed' ? ' removed' : '') + '">'
+          + '<td class="chk"><input type="checkbox" data-id="' + esc(f.id) + '"' + (f.include ? ' checked' : '') + (f.status === 'removed' ? ' disabled' : '') + '></td>'
+          + '<td><span class="name">' + esc(f.name) + '</span>' + tags
+          + (f.minor ? '<span class="tag read">简单操作</span>' : '')
+          + (f.shared ? '<span class="tag read" title="已在《系统通用操作》里讲过，需要单独讲时再勾选">通用·' + esc(f.shared) + '</span>' : '')
+          + (f.desc ? '<div class="desc">' + esc(f.desc) + '</div>' : '')
+          + (f.how ? '<div class="desc">演示方式：' + esc(f.how) + '</div>' : '')
+          + (f.blocked ? '<div class="blocked">⚠ ' + esc(f.blocked) + '</div>' : '') + '</td>'
+          + '<td>' + mode + '</td><td class="meta">' + meta + '</td><td>' + sceneCell(f) + '</td></tr>';
+      }).join('')
+      + '</tbody></table></section>';
+  }).join('');
+  $('#pages').innerHTML = rows;
+
+  document.querySelectorAll('input[data-id]').forEach((el) => { el.onchange = () => {
+    feat(el.dataset.id).include = el.checked; dirty = true; render();
+  }; });
+  document.querySelectorAll('select[data-mode]').forEach((el) => { el.onchange = () => {
+    feat(el.dataset.mode).writeMode = el.value; dirty = true; render();
+  }; });
+  renderState();
+}
+
+const feat = (id) => data.features.find((f) => f.id === id);
+
+function renderState() {
+  const on = data.features.filter((f) => f.include);
+  const writes = on.filter((f) => f.kind === 'write');
+  const miss = data.scriptFound ? on.filter((f) => !(data.scenes[f.id] || []).length) : [];
+  const changes = data.features.filter((f) => f.status).length;
+  $('#stat').innerHTML = '共 <b>' + data.features.length + '</b> 个功能，已选 <b>' + on.length + '</b> 个'
+    + '（只读 ' + (on.length - writes.length) + '，写数据 ' + writes.length
+    + (writes.length ? '，其中真实提交 ' + writes.filter((f) => f.writeMode === 'submit').length : '') + '）'
+    + (miss.length ? '　<span class="scene-miss">缺场景 ' + miss.length + ' 个</span>' : '');
+
+  const st = $('#state');
+  const confirmed = !!data.confirmedAt && !dirty;
+  if (dirty) { st.className = 'pill warn'; st.textContent = '有未保存的修改'; }
+  else if (data.confirmedAt) { st.className = 'pill ok'; st.textContent = '已确认 · ' + data.confirmedAt; }
+  else if (changes) { st.className = 'pill info'; st.textContent = '系统有变化，待重新确认（' + changes + ' 项）'; }
+  else { st.className = 'pill warn'; st.textContent = '待确认'; }
+
+  $('#btnDry').disabled = !confirmed || !data.scriptFound;
+  $('#btnProduce').disabled = !confirmed || !data.scriptFound;
+  $('#btnConfirm').disabled = !on.length;
+  let msg = '';
+  if (!data.scriptFound) msg = '清单没有关联演示脚本（script 字段），确认后还不能出片';
+  else if (data.scriptError) msg = '读取演示脚本出错：' + data.scriptError;
+  else if (!confirmed) msg = '勾选要演示的功能后点「确认清单」，确认后才能出片';
+  else if (miss.length) msg = '有 ' + miss.length + ' 个已选功能还没有脚本场景，出片时会提示补写';
+  else msg = '清单已确认，演示脚本 ' + data.script;
+  $('#msg').textContent = msg;
+}
+
+function decisions() {
+  const d = {};
+  for (const f of data.features) d[f.id] = { include: f.include, writeMode: f.writeMode };
+  return d;
+}
+
+async function save(confirmIt) {
+  try {
+    const fresh = await api('/api/features?f=' + encodeURIComponent(file), { decisions: decisions(), confirm: confirmIt });
+    await load(fresh);
+    $('#msg').textContent = confirmIt ? '已确认，可以出片' : '草稿已保存';
+  } catch (e) {
+    $('#msg').textContent = '保存失败：' + e.message;
+  }
+}
+
+$('#btnSave').onclick = () => save(false);
+$('#btnConfirm').onclick = () => save(true);
+
+document.querySelectorAll('[data-pick]').forEach((b) => { b.onclick = () => {
+  for (const f of data.features) {
+    if (f.status === 'removed') continue;
+    const usable = !f.blocked && !f.minor && !f.shared;
+    f.include = b.dataset.pick === 'all' ? usable : b.dataset.pick === 'read' ? f.kind === 'read' && usable : false;
+  }
+  dirty = true; render();
+}; });
+
+async function produce(dry) {
+  const log = $('#log');
+  log.style.display = 'block';
+  log.innerHTML = '';
+  try {
+    await api('/api/produce', { script: data.script, dry });
+  } catch (e) {
+    log.innerHTML = '<span class="err">' + esc(e.message) + '</span>';
+    return;
+  }
+  $('#btnDry').disabled = $('#btnProduce').disabled = true;
+}
+
+$('#btnDry').onclick = () => produce(true);
+$('#btnProduce').onclick = () => produce(false);
+
+const es = new EventSource('/api/log');
+es.onmessage = (ev) => {
+  const m = JSON.parse(ev.data);
+  const log = $('#log');
+  if (log.style.display !== 'block') return;
+  if (m.kind === 'log' || m.kind === 'start') {
+    const line = document.createElement('div');
+    if (m.stream === 'err') line.className = 'err';
+    line.textContent = m.text;
+    log.appendChild(line);
+    log.scrollTop = log.scrollHeight;
+  } else if (m.kind === 'done') {
+    const line = document.createElement('div');
+    line.className = m.code === 0 ? '' : 'err';
+    line.textContent = m.code === 0 ? '—— 完成 ——' : '—— 未完成（退出码 ' + m.code + '）——';
+    log.appendChild(line);
+    log.scrollTop = log.scrollHeight;
+    renderState();
+  }
+};
+
+window.addEventListener('beforeunload', (e) => { if (dirty) { e.preventDefault(); e.returnValue = ''; } });
+init().catch((e) => { $('#pages').innerHTML = '<div class="empty">加载失败：' + esc(e.message) + '</div>'; });
+</script>
+</body>
+</html>
