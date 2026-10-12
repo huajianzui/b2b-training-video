@@ -21,7 +21,7 @@ function fileHash(file) {
   return hash.digest('hex');
 }
 
-function fingerprints(script) {
+function fingerprints(script, bgm) {
   const features = script.features ? fileHash(script.features.file) : '';
   const identity = digest({ source: fs.realpathSync(script.source), url: script.url, login: normLogin(script) });
   const rehearsal = require('./script').loadScript(script.source, { stage: 'rehearsal' });
@@ -36,7 +36,9 @@ function fingerprints(script) {
   const record = digest({ identity, features, adapters: script.adapters, tts, scenes: script.scenes,
     requests: script.readOnlyRequests, safety: script.safety });
   const manual = digest({ record, ...documentation });
-  const compose = digest({ record, watermark: script.watermark });
+  if (bgm && !fs.statSync(bgm).isFile()) throw new Error('背景音乐必须是可读取的音频文件：' + bgm);
+  const music = bgm ? { source: fs.realpathSync(bgm), hash: fileHash(bgm) } : null;
+  const compose = digest({ record, watermark: script.watermark, bgm: music });
   return { identity, check, manual, rehearsalManual: digest({ check, ...documentation }), tts, record, compose };
 }
 
@@ -54,9 +56,9 @@ function artifact(out, rel) {
   return { file: relative.replace(/\\/g, '/'), hash: fileHash(full) };
 }
 
-function openPipeline(out, script, from, { manual = true, skipCheck = false } = {}) {
+function openPipeline(out, script, from, { manual = true, skipCheck = false, bgm = null } = {}) {
   const stateFile = path.join(out, 'pipeline.json');
-  const hashes = fingerprints(script);
+  const hashes = fingerprints(script, bgm);
   let previous = null;
   if (fs.existsSync(stateFile)) {
     try { previous = JSON.parse(fs.readFileSync(stateFile, 'utf8')); }

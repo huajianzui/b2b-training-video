@@ -54,10 +54,10 @@ test('续跑重新检查功能清单确认状态', (t) => {
 });
 
 // 仅构造阶段来源记录和可校验的合成字节，不把这些夹具当作可播放的视频。
-function seed(f) {
+function seed(f, options = {}) {
   const script = loadScript(f.file);
   const { openPipeline } = require(path.join(f.root, 'pipeline'));
-  const p = openPipeline(f.out, script, 'script', { manual: false });
+  const p = openPipeline(f.out, script, 'script', { manual: false, ...options });
   fs.writeFileSync(path.join(f.out, 'check-report.json'), '{"ok":true}');
   p.complete('check', ['check-report.json']);
   fs.mkdirSync(path.join(f.out, 'tts'), { recursive: true });
@@ -72,6 +72,19 @@ function seed(f) {
   p.complete('compose', ['demo-voiced.mp4', 'subs.srt']);
   return p;
 }
+
+test('背景音乐的新增、移除或内容变化不能直接复用原合成缓存', (t) => {
+  const f = fixture(t), music = path.join(f.root, 'music.mp3');
+  fs.writeFileSync(music, 'fixture-music-a'); seed(f);
+  const added = f.run('demo.yaml', 'cards', ['--bgm', music]);
+  assert.equal(added.status, 2, added.stdout + added.stderr); assert.match(added.stderr, /compose/);
+  seed(f, { bgm: music });
+  assert.equal(f.run('demo.yaml', 'cards', ['--bgm', music]).status, 0);
+  const removed = f.run('demo.yaml', 'cards'); assert.equal(removed.status, 2, removed.stdout + removed.stderr);
+  seed(f, { bgm: music }); fs.writeFileSync(music, 'fixture-music-b');
+  const replaced = f.run('demo.yaml', 'cards', ['--bgm', music]);
+  assert.equal(replaced.status, 2, replaced.stdout + replaced.stderr); assert.match(replaced.stderr, /compose/);
+});
 
 test('修改 pronounce 后从 tts 开始，输出 JSON 使用当前 YAML 的读音', (t) => {
   const f = fixture(t);

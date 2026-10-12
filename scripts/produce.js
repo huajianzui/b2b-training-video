@@ -18,6 +18,35 @@
  *   node produce.js --allow-uncovered      功能清单里有勾选了但还没写场景的功能时，仍先出已有部分
  */
 
+const argv = process.argv.slice(2);
+const VALUED = new Set(['--from', '--bgm']);
+const SWITCHES = new Set(['--dry', '--no-manual', '--skip-check', '--relogin', '--no-login', '--no-cards', '--headed', '--allow-uncovered']);
+if (argv.includes('--help') || argv.includes('-h')) {
+  console.log(`用法：node produce.js [script.yaml] [选项]
+  --dry                 只校验、演练及生成演练手册
+  --from <环节>         从 script / login / check / tts / record / manual / compose / verify / cards 开始
+  --bgm <音频文件>      合成背景音乐；变化后从 compose 重跑
+  --no-manual           不生成手册
+  --no-cards            不加片头片尾
+  --no-login / --relogin 跳过登录 / 重新登录
+  --skip-check          跳过演练，仍需独立提交确认
+  --headed              显示录制浏览器
+  --allow-uncovered     调试时允许清单部分功能未写场景
+  --help / -h           显示帮助，不执行任务`);
+  process.exit(0);
+}
+let scriptArg;
+for (let i = 0; i < argv.length; i++) {
+  const arg = argv[i];
+  if (VALUED.has(arg)) {
+    if (!argv[i + 1] || argv[i + 1].startsWith('-')) fail(arg + ' 缺少参数；使用 --help 查看用法。');
+    i++;
+  } else if (SWITCHES.has(arg)) continue;
+  else if (arg.startsWith('-')) fail('未知选项：' + arg + '；使用 --help 查看用法。');
+  else if (scriptArg !== undefined) fail('只能指定一份演示脚本。');
+  else scriptArg = arg;
+}
+
 const { spawnSync } = require('child_process');
 const fs = require('fs');
 const path = require('path');
@@ -67,15 +96,13 @@ function ensureFonts() {
 let pyExe;
 const PY = () => (pyExe = pyExe || findPython());
 
-const argv = process.argv.slice(2);
 const has = (f) => argv.includes('--' + f);
 const val = (n) => {
   const i = argv.indexOf('--' + n);
   return i >= 0 && argv[i + 1] && !argv[i + 1].startsWith('--') ? argv[i + 1] : null;
 };
-const VALUED = new Set(['--from', '--bgm']);
-const scriptArg = argv.find((a, i) => !a.startsWith('--') && !VALUED.has(argv[i - 1]));
 const SCRIPT_FILE = path.resolve(HERE, scriptArg || 'script.yaml');
+const BGM = val('bgm') ? path.resolve(HERE, val('bgm')) : null;
 
 const MANUAL = !has('no-manual');
 const FROM = val('from') || 'script';
@@ -145,7 +172,7 @@ if (Number(process.versions.node.split('.')[0]) < 20) {
   const release = acquireLock(OUT);
   process.once('exit', release);
   for (const [signal, code] of [['SIGINT', 130], ['SIGTERM', 143]]) process.once(signal, () => process.exit(code));
-  const pipeline = openPipeline(OUT, script, FROM, { manual: MANUAL, skipCheck: has('skip-check') });
+  const pipeline = openPipeline(OUT, script, FROM, { manual: MANUAL, skipCheck: has('skip-check'), bgm: BGM });
   fs.writeFileSync(SCRIPT_JSON, JSON.stringify(script, null, 2), 'utf8');
 
   const env = { ...release.env };
@@ -212,7 +239,7 @@ if (Number(process.versions.node.split('.')[0]) < 20) {
   if (should('compose') || should('cards')) ensureFonts();
   if (should('compose')) {
     const args = [path.join(HERE, 'compose.py')];
-    if (val('bgm')) args.push('--bgm', path.resolve(HERE, val('bgm')));
+    if (BGM) args.push('--bgm', BGM);
     if (run(tag('compose') + '  后期：烧录字幕 + 旁白音轨', PY(), args) !== 0) fail('后期合成失败。');
     pipeline.complete('compose', ['demo-voiced.mp4', 'subs.srt']);
   }

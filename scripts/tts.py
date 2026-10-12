@@ -30,13 +30,13 @@ TIME_RE = re.compile(r"time=(\d+):(\d+):(\d+\.\d+)")
 
 
 def duration_of(path):
-    r = subprocess.run([str(FFMPEG), "-i", str(path), "-f", "null", "-"],
+    r = subprocess.run([str(FFMPEG), "-nostdin", "-xerror", "-i", str(path), "-f", "null", "-"],
                        stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True,
                        encoding="utf-8", errors="replace")
     last = None
     for m in TIME_RE.finditer(r.stdout or ""):
         last = int(m.group(1)) * 3600 + int(m.group(2)) * 60 + float(m.group(3))
-    return last
+    return last if r.returncode == 0 and last is not None and last > 0 else None
 
 
 async def synth(text, target, voice, rate):
