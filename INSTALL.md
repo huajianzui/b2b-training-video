@@ -1,60 +1,61 @@
-# 给 Agent：安装「B 端培训视频」技能
+# 安装「B 端培训视频」技能
 
-你正在读这份说明，是因为用户把本仓库链接发给了你，要你**安装技能**。现在只做安装，**不要开始做培训视频**，**不要向用户要任何业务系统的代码路径或网址**。
+这份说明给正在执行安装的 Agent。现在只做安装，**不要开始做培训视频**，**不要向用户要业务系统的代码路径或网址**。
 
-本仓库本身就是一份 Cursor 个人 Skill。装好后，用户在任意工作区说「给 XX 模块做培训视频」即可。对方用自己工作区里的代码和系统，不需要作者的项目。
+## 技能做什么
+
+读当前工作区里的 B 端系统代码，把系统跑起来，盘点功能让用户勾选，再写出演示脚本并出片：
+
+- `<名字>.mp4`：配音、字幕、片头片尾
+- `<名字>手册.docx`：每步带红框截图
+
+装好后，用户打开要做视频的项目，说「给 XX 模块做培训视频」即可。演示对象是用户自己工作区里的系统。
 
 ## 1. 装到哪里
 
-个人 Skill 目录（对本机所有项目生效）：
+按**当前正在对话的 Agent**选择个人技能目录（对本机所有项目生效）：
 
-| 系统 | 目录 |
+| 环境 | 目录 |
 |---|---|
-| Windows | `$env:USERPROFILE\.cursor\skills\b2b-training-video` |
-| macOS / Linux | `~/.cursor/skills/b2b-training-video` |
+| Cursor | `~/.cursor/skills/b2b-training-video` |
+| Claude Code | `~/.claude/skills/b2b-training-video` |
+| Codex | `~/.codex/skills/b2b-training-video` |
+| 其他 / 无法判断 | `~/.agents/skills/b2b-training-video` |
+
+Windows 把 `~` 换成 `$env:USERPROFILE`。从进程、工作区配置或已有技能目录判断当前环境，不要默认只装 Cursor。
 
 装完后，`SKILL.md` 必须**直接**落在这个目录里，不能多套一层文件夹。
 
 仓库地址：`https://github.com/huajianzui/b2b-training-video.git`
 
+用户明确要求「只给当前项目用」时，改装到该项目的 `.cursor/skills/`、`.claude/skills/` 或 `.agents/skills/`（与当前 Agent 对应）。默认装个人目录。
+
 ## 2. 执行安装
 
-先看目标目录在不在、是不是本仓库。
+先看目标目录在不在、是不是本仓库。把 `<目录>` 换成第 1 步选定的路径。
 
-**还没有这个目录** — 克隆：
+**还没有这个目录** — 先建父目录，再克隆：
 
-```powershell
-New-Item -ItemType Directory -Force "$env:USERPROFILE\.cursor\skills" | Out-Null
-git clone https://github.com/huajianzui/b2b-training-video.git "$env:USERPROFILE\.cursor\skills\b2b-training-video"
 ```
-
-```bash
-mkdir -p ~/.cursor/skills
-git clone https://github.com/huajianzui/b2b-training-video.git ~/.cursor/skills/b2b-training-video
+git clone https://github.com/huajianzui/b2b-training-video.git <目录>
 ```
 
 **目录已在，且 remote 是本仓库** — 更新：
 
-```powershell
-git -C "$env:USERPROFILE\.cursor\skills\b2b-training-video" pull --ff-only
 ```
-
-```bash
-git -C ~/.cursor/skills/b2b-training-video pull --ff-only
+git -C <目录> pull --ff-only
 ```
 
 **目录已在，但不是 git 仓库或 remote 不对** — 停下来告诉用户，不要覆盖。
 
-装进当前项目的 `.cursor/skills/` 只在用户明确要求「只给这个项目用」时才做。默认装个人目录。
-
-不要在 Skill 目录里跑 `npm install`。工具包是用户做视频时，由 `SKILL.md` 复制到工作区 `.training-video/` 再装的。
+不要在技能目录里跑 `npm install`。工具包是做视频时由 `SKILL.md` 复制到工作区 `.training-video/` 再装的。
 
 ## 3. 克隆失败
 
-本仓库是**私有**的。若 `git clone` 返回 404 或 Authentication failed：
+本仓库是私有的。若 `git clone` 返回 404 或 Authentication failed：
 
-1. 说明：当前 GitHub 账号没有这个仓库的权限。
-2. 请用户让仓库主人在 GitHub 把 TA 加成 Collaborator，并在本机完成 `gh auth login` 或 Git Credential 登录。
+1. 说明当前 GitHub 账号没有这个仓库的访问权限。
+2. 请用户先取得仓库访问权限，并在本机完成 `gh auth login` 或 Git Credential 登录。
 3. 不要改用其他仓库，不要跳过安装去写脚本。
 
 ## 4. 验收
@@ -67,7 +68,7 @@ git -C ~/.cursor/skills/b2b-training-video pull --ff-only
 用用户能看懂的话回复：
 
 - 已安装（或已更新）到哪个目录
-- 下次怎么用：打开**自己要做视频的那个项目**工作区，对 Agent 说「给 XX 模块做培训视频」
+- 下次怎么用：打开要做视频的项目，对 Agent 说「给 XX 模块做培训视频」
 - 需要 Node 20+、Python 3（做视频时会再装 `edge-tts`）
 - 只在本地开发或独立测试环境使用
 
