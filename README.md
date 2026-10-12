@@ -22,4 +22,4 @@ git clone https://github.com/huajianzui/b2b-training-video.git "$env:USERPROFILE
 - 能访问微软语音服务（配音用 edge-tts 免费接口）
 - 只在本地开发或独立测试环境使用。用户确认可以写测试数据后，写数据功能会真实保存。
 
-示例脚本已脱敏，人名和密码是占位，不能直接拿去跑。
+`scripts/script.yaml` 是虚构的订单管理格式示例，只看写法。对方用自己工作区里的代码和系统即可，不需要附带任何现成业务项目。

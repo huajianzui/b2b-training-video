@@ -44,24 +44,24 @@ generatedAt: {{date}}
 confirmedAt: ~                       # 固定写 ~，用户确认后回写
 pages:
   - id: list                         # 短英文
-    name: 任务库列表
-    entry: 左侧菜单「项目管理 › 任务库管理」   # 用户怎么进到这个页面，用界面上看得到的文字
-    route: /task-libraries
-    files: [views/task/TaskLibraryView.vue]
+    name: 订单列表
+    entry: 左侧菜单「业务 › 订单管理」   # 用户怎么进到这个页面，用界面上看得到的文字
+    route: /orders
+    files: [views/order/OrderListView.vue]
 features:
   - id: list.create                  # 页面id.动作，稳定
     page: list
-    name: 新增任务库
+    name: 新增订单
     kind: write                      # read 只读 | write 写数据
     desc: 这个功能是什么；其他入口
     how: 打算怎么演示（一两句，复杂交互分点）
-    permission: task-library:manage  # 代码里的权限标识，没有就省略
+    permission: order:manage         # 代码里的权限标识，没有就省略
     when: 显示 / 可用条件；演示账号没资格时会看到什么
     requires: 演示前提（要什么数据 / 文件）
     blocked: 演示不了的原因           # 只按规则 5、6 写
     minor: true                      # 只按规则 7 写
     shared: 查询                      # 只按规则 10 写
-    source: views/task/TaskLibraryView.vue:6
+    source: views/order/OrderListView.vue:6
 ```
 
 不要写 include / writeMode / status（用户确认时回写）。可以用 # 注释按页面分组。

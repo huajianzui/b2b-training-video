@@ -4,8 +4,8 @@
  *
  * 文件：<名字>.features.yaml，由代码盘点产出（现在人工 / 以后 AI），确认页回写勾选结果。
  *
- *   module: 任务库管理
- *   script: ovm-task-library.yaml        对应的演示脚本
+ *   module: 订单管理
+ *   script: order.yaml                  对应的演示脚本
  *   generatedBy: 人工盘点 | gemini-2.5-pro
  *   generatedAt: 2026-10-09
  *   confirmedAt: ~                       确认页点「确认」后写入；为空时不允许出片
@@ -14,24 +14,24 @@
  *     testData: true                     能否写入测试数据：true 时写数据功能默认真实提交，否则默认填完取消
  *   pages:
  *     - id: list
- *       name: 任务库列表
- *       entry: 左侧菜单「项目管理 › 任务库管理」     怎么进到这个页面
- *       route: /task-libraries
- *       files: [views/task/TaskLibraryView.vue]
+ *       name: 订单列表
+ *       entry: 左侧菜单「业务 › 订单管理」     怎么进到这个页面
+ *       route: /orders
+ *       files: [views/order/OrderListView.vue]
  *   features:
  *     - id: list.create                  稳定 id，脚本场景用 feature: list.create 关联
  *       page: list
- *       name: 新增任务库
+ *       name: 新增订单
  *       kind: write                      read 只读 | write 写数据
  *       desc: 这个功能是什么
  *       how: 打算怎么演示
- *       permission: task-library:manage
+ *       permission: order:manage
  *       when: 显示条件
  *       requires: 演示前提（要什么数据 / 文件）
  *       blocked: 当前演示不了的原因        有值时默认不勾选
  *       minor: true                      操作过于简单，默认不勾选
  *       shared: 查询                      由公共组件提供的通用操作（查询 / 表格 / 弹窗…），已在《系统通用操作》里讲过，默认不勾选
- *       source: views/task/TaskLibraryView.vue:6
+ *       source: views/order/OrderListView.vue:6
  *       include: true                    是否演示（确认页回写；不写按默认规则）
  *       writeMode: cancel                写数据怎么处理：cancel 填完取消 | submit 真实提交（确认页回写；不写按 environment.testData 取默认）
  *       status: new | removed            改版后对比时标注，确认后清除

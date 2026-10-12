@@ -5,7 +5,7 @@ description: 为工作区里的 B 端业务系统（尤其 Vue3 + Element Plus�
 
 # B 端培训视频 + 操作手册
 
-用户只需要告诉你**模块名**（如「任务库管理」）。可选：开场白、结束语。当前环境能否写测试数据由你在第 2 步问用户。
+用户只需要告诉你**模块名**（如「订单管理」）。可选：开场白、结束语。当前环境能否写测试数据由你在第 2 步问用户。
 代码就在工作区里；系统由你自己跑起来。不要向用户要代码路径或系统地址，除非你确实找不到。
 
 **只在本地开发或独立测试环境使用。** 用户说「能写测试数据」后，写数据功能会真实保存（名称带「培训演示」前缀）。生产、共享演示环境一律按不能写处理。拿不准就当不能写，不要自己推定。
@@ -62,7 +62,7 @@ py -3 -m pip install -r requirements.txt        # 非 Windows 用 python3 -m pip
 
 按 `scripts/prompts/feature-inventory.md` 的规则读代码，产出 `<名字>.features.yaml`（格式见 `features.js` 开头注释）。模块很大时可以交给 subagent，把提示词正文和占位符取值一起给它。
 
-- 参考：`examples/ovm-task-library.features.yaml` 是早期手写的清单，结构可参考；和 `feature-inventory.md` 规则冲突时**以规则为准**（如它把刷新列成了 minor、把缺文件的导入标成 blocked）。不要照抄它的 `include` / `writeMode` / `confirmedAt`。
+- 格式见 `features.js` 开头注释和 `scripts/prompts/feature-inventory.md`。
 - 校验：`node features.js <名字>.features.yaml`
 - **让用户确认**：`node app/server.js` 后请用户打开 `http://127.0.0.1:7788/features?f=<名字>.features.yaml`（或直接打开 `http://127.0.0.1:7788`，会列出全部清单）勾选并点确认；也可以在对话里列出清单让用户说改哪些，你改完后 `node features.js <清单> --yes`。
 - 未确认（`confirmedAt` 为空）的清单不能出片。
@@ -85,7 +85,7 @@ py -3 -m pip install -r requirements.txt        # 非 Windows 用 python3 -m pip
 
 ### 5. 写演示脚本
 
-脚本格式见 `script.js` 开头注释，通用示例 `script.yaml`，完整实例 `examples/ovm-task-library.yaml`（已脱敏：人名和密码是占位，照抄会跑不通；定义 37 个场景，其中 1 个因前端 bug 未勾选，实际出片 36 个；含批量录入这类复杂弹窗的分段讲解）。
+脚本格式见 `script.js` 开头注释，通用示例 `script.yaml`（虚构的订单管理，只看写法，不要照抄到对方系统上）。
 
 1. 写脚本头：`title / url / adapters / features / login / intro / outro / manual / pronounce`。登录段参照实例（`mode: auto`，`reuse: false`，`storage: output/auth.json`）。
 2. 按页面分批写场景，规则见 `scripts/prompts/scene-writer.md`。每批写完：
@@ -151,6 +151,6 @@ node produce.js <脚本> --yes
 | 演练卡在登录 | 确认登录段选择器；账号密码页在已登录时仍显示密码框的，用 `reuse: false` |
 | Element Plus 下拉选不中 | 用 `select` 动作，target 指向下拉框本身，value 写选项完整文字（如「姓名（账号）」） |
 | 弹窗里的结果截图没拍到 | 结果断言写弹窗标题文字；写数据功能的断言放在基础动作上，收尾断言放 `ending.cancel.expect` |
-| 确认框断言失败 | Element Plus 的确认框（`ElMessageBox`）和普通弹窗在无障碍树里是 `dialog`，标题是它的名称，里面**没有 heading**：写 `visible: { role: dialog, name: 停用任务库 }`，不要写 `role: heading` |
+| 确认框断言失败 | Element Plus 的确认框（`ElMessageBox`）和普通弹窗在无障碍树里是 `dialog`，标题是它的名称，里面**没有 heading**：写 `visible: { role: dialog, name: 关闭订单 }`，不要写 `role: heading` |
 | 配音合成超时（ConnectionTimeoutError） | 已自动重试 6 次；仍失败就 `--from tts` 续跑 |
 | 某功能有 bug、暂时不能演示 | 在清单里写 `blocked: 前端 bug：……` 并取消勾选，修好后去掉再勾选 |

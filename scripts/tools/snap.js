@@ -9,9 +9,9 @@
  *   node tools/snap.js <登录态文件> <网址> [快照名]   只看一页时不用写步骤文件
  *
  * 步骤文件：数组，每项一个动作，选择器用 Playwright 字符串写法
- *   ["goto", "http://localhost:5174/task-libraries"]
- *   ["click", "tr:has-text('TL-OVM') >> role=button[name='明细']"]
- *   ["fill", "role=textbox[name='任务内容']", "立项"]
+ *   ["goto", "http://localhost:5174/orders"]
+ *   ["click", "tr:has-text('SO-20261008-002') >> role=button[name='详情']"]
+ *   ["fill", "role=textbox[name='订单号']", "SO-001"]
  *   ["press", "Escape"]
  *   ["wait", 1500]
  *   ["snap", "detail"]                     存 output/_snap/detail.png / .aria.yaml，并打印当前地址
