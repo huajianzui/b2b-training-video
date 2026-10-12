@@ -101,6 +101,13 @@
 
 <main>
   <div id="environment" class="bar"></div>
+  <section id="loginWait" class="confirm-data" hidden>
+    <h2>等待登录完成</h2>
+    <p id="loginSummary"></p>
+    <p id="loginHint"></p>
+    <button id="btnLogin" class="primary">我已登录完成 · 继续</button>
+    <p>登录确认后，如本轮要写入数据，还需单独确认环境与测试数据。</p>
+  </section>
   <section id="dataWait" class="confirm-data" hidden>
     <h2 id="dataTitle"></h2>
     <p id="dataMismatch" class="scene-miss" hidden></p>
@@ -137,7 +144,7 @@ let file = new URLSearchParams(location.search).get('f') || '';
 let data = null;
 let dirty = false;
 let sessionToken = '';
-let currentWait = null, busy = false;
+let currentWait = null, currentLogin = null, loginSent = '', busy = false;
 
 async function api(url, body) {
   const r = await fetch(url, body ? { method: 'POST', headers: { 'Content-Type': 'application/json', 'X-Training-Token': sessionToken }, body: JSON.stringify(body) } : {});
@@ -152,6 +159,8 @@ async function init() {
   if (!list.length) {
     $('#pages').innerHTML = '<div class="empty">项目目录下还没有 *.features.yaml 功能清单</div>';
     $('#state').textContent = '无清单';
+    $('#btnSave').disabled = $('#btnConfirm').disabled = true;
+    await pollStatus(); setInterval(pollStatus, 1000);
     return;
   }
   if (!file || !list.some((x) => x.file === file)) file = list[0].file;
@@ -194,6 +203,7 @@ function render() {
       + feats.map((f) => {
         const tags = '<span class="tag ' + f.kind + '">' + (f.kind === 'write' ? '写数据' : '只读') + '</span>'
           + (f.status === 'new' ? '<span class="tag new">新增</span>' : '')
+          + (f.status === 'changed' ? '<span class="tag write">信息有变化</span>' : '')
           + (f.status === 'removed' ? '<span class="tag removed">已从系统中消失</span>' : '');
         const choice = (key, title) => '<div class="meta">' + title + '</div><select aria-label="' + esc(f.name + title) + '" data-mode="' + esc(f.id)
           + '" data-key="' + key + '"' + (f.include && !busy ? '' : ' disabled') + '>'
@@ -313,8 +323,16 @@ $('#btnProduce').onclick = () => produce(false);
 async function pollStatus() {
   try {
     const status = await api('/api/status');
-    const changed = busy !== (status.running || !!status.dataWait);
-    busy = status.running || !!status.dataWait;
+    const changed = busy !== (status.running || !!status.dataWait || !!status.loginWait);
+    busy = status.running || !!status.dataWait || !!status.loginWait;
+    currentLogin = status.loginWait;
+    $('#loginWait').hidden = !currentLogin;
+    if (currentLogin) {
+      $('#loginSummary').textContent = '登录页面：' + currentLogin.url;
+      $('#loginHint').textContent = currentLogin.hint;
+      $('#btnLogin').textContent = currentLogin.needForce ? '仍然继续（跳过登录状态识别）' : '我已登录完成 · 继续';
+      $('#btnLogin').disabled = loginSent === currentLogin.runId + ':' + currentLogin.needForce;
+    } else loginSent = '';
     if ((currentWait && currentWait.runId) !== (status.dataWait && status.dataWait.runId)) {
       $('#dataReady').checked = false; $('#btnData').disabled = true;
     }
@@ -328,9 +346,17 @@ async function pollStatus() {
         + '\n路径：' + currentWait.source + '\n环境：' + currentWait.environment + ' · ' + currentWait.url
         + '\n功能：' + currentWait.features.map((f) => f.name).join('、');
     }
-    if (changed) render();
+    if (changed && data) render();
   } catch (e) { $('#msg').textContent = '读取提交状态失败：' + e.message; }
 }
+$('#btnLogin').onclick = async () => {
+  if (!currentLogin) return;
+  const { runId, needForce } = currentLogin;
+  loginSent = runId + ':' + needForce; $('#btnLogin').disabled = true;
+  try { await api('/api/login-confirm', { runId, force: needForce }); }
+  catch (e) { loginSent = ''; $('#msg').textContent = e.message; }
+  await pollStatus();
+};
 $('#dataReady').onchange = () => { $('#btnData').disabled = !$('#dataReady').checked || !currentWait; };
 async function dataDecision(cancel) {
   if (!currentWait) return;

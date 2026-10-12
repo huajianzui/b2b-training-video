@@ -67,9 +67,11 @@ function readLoginWait() {
   }
 }
 
-function confirmLogin(force) {
+function confirmLogin(force, runId) {
   const wait = readLoginWait();
   if (!wait) return { ok: false, error: '当前没有在等待登录确认（可能已经开始了，或登录不在这台机器上跑）。' };
+  if (runId !== undefined && runId !== wait.runId) return { ok: false, error: '登录确认已失效，请刷新后查看当前等待。' };
+  if (fs.existsSync(GO_FILE)) return { ok: false, error: '登录确认已提交，请等待登录状态检查。' };
   fs.writeFileSync(GO_FILE, JSON.stringify({ runId: wait.runId, force: !!force, at: Date.now() }, null, 2), 'utf8');
   return { ok: true, force: !!force };
 }
@@ -406,11 +408,9 @@ const server = http.createServer(async (req, res) => {
     }
 
     if (p === '/api/login-confirm' && req.method === 'POST') {
-      // 用户在界面上点了【我已登录完成 · 开始录制】
-      const body = await readBody(req).catch(() => '{}');
-      let force = false;
-      try { force = !!(JSON.parse(body || '{}').force); } catch (e) { /* 默认不强制 */ }
-      const r = confirmLogin(force);
+      // 用户在界面上点了【我已登录完成 · 继续】
+      const body = JSON.parse((await readBody(req)) || '{}');
+      const r = confirmLogin(!!body.force, body.runId);
       return send(res, r.ok ? 200 : 409, JSON.stringify(r));
     }
 

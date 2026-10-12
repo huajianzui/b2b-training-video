@@ -16,7 +16,7 @@ async function until(fn, label) {
   while (Date.now() < deadline) { const value = await fn(); if (value) return value; await new Promise((r) => setTimeout(r, 50)); }
   throw new Error('测试未等到：' + label);
 }
-async function fixture(t, { rehearsal = 'submit', record = 'submit', badExpect = false, baseSave = false, narration = '' } = {}) {
+async function fixture(t, { rehearsal = 'submit', record = 'submit', badExpect = false, baseSave = false, narration = '', account = {} } = {}) {
   if (!process.env.TEST_BROWSER_PATH) { t.skip('设置 TEST_BROWSER_PATH 后验证真实演练与录制'); return null; }
   const temp = fs.mkdtempSync(path.join(os.tmpdir(), 'training-execution-'));
   const root = path.join(temp, 'runtime'), out = path.join(root, 'output');
@@ -57,9 +57,9 @@ async function fixture(t, { rehearsal = 'submit', record = 'submit', badExpect =
         cancel: { actions: [{ click: { id: 'cancel' } }], expect: { text: '取消完成' } } } }] }));
   const preload = path.join(root, 'test-browser.cjs');
   fs.writeFileSync(preload, `const pw = require('playwright'); const launch = pw.chromium.launch.bind(pw.chromium);
-pw.chromium.launch = (options) => launch({ ...options, executablePath: process.env.TEST_BROWSER_PATH });`);
+pw.chromium.launch = (options) => launch({ ...options, executablePath: process.env.TEST_BROWSER_PATH, headless: true });`);
   const children = new Set();
-  const env = { ...process.env, NODE_PATH: path.join(scripts, 'node_modules'), NODE_OPTIONS: '--require=' + JSON.stringify(preload) };
+  const env = { ...process.env, ...account, NODE_PATH: path.join(scripts, 'node_modules'), NODE_OPTIONS: '--require=' + JSON.stringify(preload) };
   function start(name, args = [], extraEnv = {}) {
     const child = spawn(process.execPath, [path.join(root, name), ...args], { cwd: root, env: { ...env, ...extraEnv }, stdio: ['ignore', 'pipe', 'pipe'] });
     children.add(child); let log = '';
@@ -201,6 +201,41 @@ test('局部演练选组首、组中或组尾都验证完整收尾', { timeout: 
     const report = JSON.parse(fs.readFileSync(path.join(f.out, 'run-report.json')));
     assert.deepEqual(report.scenes.map((s) => s.id), ['start', 'middle', 'end']); assert.equal(report.ok, true);
   }
+});
+
+test('桌面清单重新确认后，非 TTY 人工登录按钮继续任务且不替代提交确认', { timeout: 60000 }, async (t) => {
+  const account = { TRAINING_FIXTURE_USER: 'fixture-user', TRAINING_FIXTURE_PASSWORD: crypto.randomBytes(16).toString('hex') };
+  const f = await fixture(t, { account }); if (!f) return;
+  const doc = YAML.parse(fs.readFileSync(f.file, 'utf8'));
+  doc.login = { enabled: true, mode: 'auto', start: 'manual', reuse: false, headless: true,
+    url: doc.url + '/login-screen', username: '${TRAINING_FIXTURE_USER}', password: '${TRAINING_FIXTURE_PASSWORD}',
+    usernameSelector: '#user', passwordSelector: '#pass', submitSelector: '#login', successSelector: '#done' };
+  fs.writeFileSync(f.file, YAML.stringify(doc));
+  const config = YAML.parse(fs.readFileSync(f.featureFile, 'utf8'));
+  config.confirmedAt = null; config.features[0].status = 'changed'; config.features[0].when = '通过审批后';
+  fs.writeFileSync(f.featureFile, YAML.stringify(config));
+  const browser = await chromium.launch({ executablePath: process.env.TEST_BROWSER_PATH }); t.after(() => browser.close());
+  const page = await browser.newPage({ viewport: { width: 1440, height: 900 } });
+  await page.goto(f.base + '/features?f=demo.features.yaml');
+  await page.getByText('信息有变化', { exact: true }).waitFor();
+  assert.equal(await page.locator('#btnDry').isDisabled(), true);
+  await page.locator('#btnConfirm').click();
+  await page.waitForFunction(() => document.querySelector('#state').textContent.startsWith('已确认'));
+  const pending = f.start('play.js', ['demo.yaml', '--dry']);
+  const login = await until(async () => (await f.status()).loginWait, '人工登录闸门');
+  assert.equal(f.state.logins, 1); assert.equal(f.state.writes, 0);
+  assert.equal(await page.locator('#btnLogin').count(), 1);
+  await page.locator('#loginWait').waitFor({ state: 'visible' });
+  assert.match(await page.locator('#loginSummary').innerText(), /127.0.0.1.*login-screen/);
+  if (process.env.TEST_ARTIFACTS) await page.screenshot({ path: path.join(process.env.TEST_ARTIFACTS, 'manual-login-1440.png'), fullPage: true });
+  const stale = await fetch(f.base + '/api/login-confirm', { method: 'POST',
+    headers: { 'Content-Type': 'application/json', 'X-Training-Token': f.token, Origin: f.base }, body: JSON.stringify({ runId: login.runId + '-old' }) });
+  assert.equal(stale.status, 409);
+  await page.locator('#btnLogin').click(); await page.locator('#dataWait').waitFor({ state: 'visible' });
+  assert.equal(await page.locator('#loginWait').isVisible(), false); assert.equal(f.state.writes, 0);
+  assert.equal(await page.locator('#btnData').isDisabled(), true);
+  await page.locator('#dataReady').check(); await page.locator('#btnData').click();
+  const result = await pending.done; assert.equal(result.code, 0, result.log); assert.equal(f.state.writes, 1);
 });
 
 test('桌面确认页要求选择演练方式，并逐轮展示环境、功能和数据确认', { timeout: 60000 }, async (t) => {

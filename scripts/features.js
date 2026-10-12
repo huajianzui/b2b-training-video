@@ -36,7 +36,7 @@
  *       writeMode: cancel                写数据怎么处理：cancel 填完取消 | submit 真实提交（确认页回写；不写按 environment.testData 取默认）
  *       rehearsalMode: ~                 演练取消或提交，由用户单独选择；未选择不能执行写功能
  *       writeRequests: [{method: POST, url: /api/orders}]  实际写接口，来自业务代码
- *       status: new | removed            改版后对比时标注，确认后清除
+ *       status: new | changed | removed  改版后对比时标注，确认后清除
  *
  * 用法：
  *   node features.js <清单>                         校验并打印摘要
@@ -183,7 +183,7 @@ function saveDecisions(file, decisions, confirm) {
 
 /**
  * 改版后重跑：拿新盘点结果和已确认清单对比，写回已确认清单。
- * 已有功能保留用户的勾选；新增的标 new（按默认值勾选）；消失的标 removed 并取消勾选。
+ * 已有功能保留用户的选择，业务信息变化标 changed；新增标 new；消失标 removed 并取消勾选。
  * 有任何变化就清空 confirmedAt，出片前必须重新确认；没变化则保持已确认，直接出片。
  */
 function mergeFresh(savedFile, freshFile) {
@@ -192,23 +192,25 @@ function mergeFresh(savedFile, freshFile) {
   const fresh = loadFeatures(freshFile);
   const old = new Map(saved.features.map((f) => [f.id, f]));
   const added = [];
+  const updated = [];
+  const definition = ({ include, writeMode, rehearsalMode, status, ...fields }) => fields;
   const features = fresh.features.map((f) => {
     const prev = old.get(f.id);
     if (!prev) {
       added.push(f.id);
       return Object.assign({}, f, { status: 'new' });
     }
-    return Object.assign({}, f, { include: prev.include, writeMode: prev.writeMode, rehearsalMode: prev.rehearsalMode, status: '' });
+    const differs = prev.status === 'removed' || JSON.stringify(definition(f)) !== JSON.stringify(definition(prev));
+    if (differs) updated.push(f.id);
+    return Object.assign({}, f, { include: prev.include, writeMode: prev.writeMode, rehearsalMode: prev.rehearsalMode,
+      status: differs ? 'changed' : prev.status });
   });
   const freshIds = new Set(fresh.features.map((f) => f.id));
   const removed = saved.features.filter((f) => !freshIds.has(f.id) && f.status !== 'removed');
   for (const f of removed) features.push(Object.assign({}, f, { include: false, status: 'removed' }));
 
-  const permissionsChanged = features.some((f) => {
-    const prev = old.get(f.id);
-    return prev && (f.kind !== prev.kind || JSON.stringify(f.writeRequests) !== JSON.stringify(prev.writeRequests));
-  });
-  const changed = added.length > 0 || removed.length > 0 || permissionsChanged;
+  const contextChanged = (fresh.module || saved.module) !== saved.module || JSON.stringify(fresh.pages) !== JSON.stringify(saved.pages);
+  const changed = added.length > 0 || removed.length > 0 || updated.length > 0 || contextChanged;
   const savedEnvironment = readDoc(savedFile).toJS().environment;
   const out = {
     module: fresh.module || saved.module,
@@ -239,7 +241,7 @@ function mergeFresh(savedFile, freshFile) {
     }),
   };
   fs.writeFileSync(savedFile, YAML.stringify(out, { lineWidth: 0 }), 'utf8');
-  return { added, removed: removed.map((f) => f.id), changed };
+  return { added, updated, removed: removed.map((f) => f.id), changed };
 }
 
 module.exports = { loadFeatures, saveDecisions, validateDecisions, mergeFresh, FeatureError, WRITE_MODES };
@@ -251,9 +253,11 @@ if (require.main === module) {
     if (cmd === 'merge') {
       if (!a || !b) throw new FeatureError('用法：node features.js merge <已确认清单> <新盘点清单>');
       const r = mergeFresh(path.resolve(a), path.resolve(b));
-      if (!r.changed) console.log('功能没有变化，保持已确认状态，可以直接出片。');
+      if (!r.changed) console.log(loadFeatures(path.resolve(a)).confirmedAt
+        ? '功能没有变化，保持已确认状态，可以直接出片。' : '未发现新变化；清单仍待用户确认。');
       else {
         if (r.added.length) console.log('新增 ' + r.added.length + ' 项：' + r.added.join('、'));
+        if (r.updated.length) console.log('变化 ' + r.updated.length + ' 项：' + r.updated.join('、'));
         if (r.removed.length) console.log('消失 ' + r.removed.length + ' 项：' + r.removed.join('、'));
         console.log('清单已更新，需要在确认页重新确认后才能出片。');
       }
