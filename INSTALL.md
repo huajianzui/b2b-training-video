@@ -52,11 +52,7 @@ git -C <目录> pull --ff-only
 
 ## 3. 克隆失败
 
-本仓库是私有的。若 `git clone` 返回 404 或 Authentication failed：
-
-1. 说明当前 GitHub 账号没有这个仓库的访问权限。
-2. 请用户先取得仓库访问权限，并在本机完成 `gh auth login` 或 Git Credential 登录。
-3. 不要改用其他仓库，不要跳过安装去写脚本。
+本仓库是公开的。若 `git clone` 失败，把报错原文告诉用户，检查网络或 Git 是否可用。不要改用其他仓库，不要跳过安装去写脚本。
 
 ## 4. 验收
 

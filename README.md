@@ -9,17 +9,11 @@
 
 ## 安装
 
-把本仓库链接发给正在使用的 Agent，并让它按 [INSTALL.md](INSTALL.md) 安装：
+把这个链接发给 Agent，让 Agent 按 [INSTALL.md](INSTALL.md) 帮你安装：
 
-```
-请按这个仓库的 INSTALL.md 安装「B 端培训视频」技能：
 https://github.com/huajianzui/b2b-training-video
-装好后告诉我怎么用，不要现在做视频。
-```
 
-本仓库是私有的，克隆前需要已有访问权限。
-
-手动安装时，把仓库克隆到当前 Agent 的个人技能目录（`SKILL.md` 必须直接落在该目录里）：
+也可以自己把仓库克隆到当前 Agent 的个人技能目录（`SKILL.md` 必须直接落在该目录里）：
 
 | 环境 | 目录 |
 |---|---|
