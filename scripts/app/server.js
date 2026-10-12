@@ -28,6 +28,7 @@ const SESSION_TOKEN = crypto.randomBytes(32).toString('hex');
 const { WAIT_FILE, GO_FILE } = require('../login');
 const { loadFeatures, saveDecisions } = require('../features');
 const { sceneFeatureIds } = require('../script');
+const { readDataWait, confirmData } = require('../confirmation');
 
 // ---------------------------------------------------------------- 登录闸门
 
@@ -293,7 +294,7 @@ function featureView(full) {
   if (scriptFull) {
     try { scenes = sceneFeatureIds(scriptFull); } catch (e) { scriptError = e.message; }
   }
-  return Object.assign({}, f, { file: path.basename(full), scriptFound: !!scriptFull, scriptError, scenes });
+  return Object.assign({}, f, { file: path.basename(full), scriptFound: !!scriptFull, scriptSource: scriptFull, scriptError, scenes });
 }
 
 // ---------------------------------------------------------------- 路由
@@ -312,13 +313,9 @@ const server = http.createServer(async (req, res) => {
       return send(res, 200, JSON.stringify({ token: SESSION_TOKEN }));
     }
     if (p === '/' || p === '/index.html') {
-      // 旧版流程的首页只在开发源里有；Skill 分发版没有它，首页直接进功能清单确认页
-      const index = path.join(__dirname, 'index.html');
-      if (!fs.existsSync(index)) {
-        res.writeHead(302, { Location: '/features' });
-        return res.end();
-      }
-      return send(res, 200, fs.readFileSync(index), 'text/html; charset=utf-8');
+      // 覆盖升级可能保留旧文件，入口始终使用当前确认流程。
+      res.writeHead(302, { Location: '/features' });
+      return res.end();
     }
 
     if (p === '/features' || p === '/features.html') {
@@ -376,14 +373,7 @@ const server = http.createServer(async (req, res) => {
     }
 
     if (p === '/api/build' && req.method === 'POST') {
-      if (!fs.existsSync(path.join(ROOT, 'build.js'))) {
-        return send(res, 404, JSON.stringify({ ok: false, error: '旧版生成接口已下线，请用演示脚本 + produce.js 出片' }));
-      }
-      const body = await readBody(req).catch(() => '{}');
-      let args = [];
-      try { args = (JSON.parse(body || '{}').args || []).filter((a) => /^--[\w-]+$/.test(a) || /^[-\w%]+$/.test(a)); } catch (e) { /* 用默认 */ }
-      const r = startJob('build.js', args);
-      return send(res, r.ok ? 200 : 409, JSON.stringify(r));
+      return send(res, 404, JSON.stringify({ ok: false, error: '旧版生成接口已下线，请用演示脚本 + produce.js 出片' }));
     }
 
     if (p === '/api/probe' && req.method === 'POST') {
@@ -425,7 +415,14 @@ const server = http.createServer(async (req, res) => {
     }
 
     if (p === '/api/status') {
-      return send(res, 200, JSON.stringify({ running: !!running, loginWait: readLoginWait() }));
+      return send(res, 200, JSON.stringify({ running: !!running, loginWait: readLoginWait(), dataWait: readDataWait() }));
+    }
+
+    if (p === '/api/data-confirm' && req.method === 'POST') {
+      try {
+        confirmData(JSON.parse(await readBody(req)));
+        return send(res, 200, JSON.stringify({ ok: true }));
+      } catch (e) { return send(res, 409, JSON.stringify({ ok: false, error: e.message })); }
     }
 
     if (p === '/api/log') {

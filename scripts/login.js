@@ -132,6 +132,8 @@ function normLogin(project) {
     successSelector: r.successSelector || r.afterLoginSelector || '',
     successUrl: r.successUrl || '',
     preClick: Array.isArray(r.preClick) ? r.preClick.filter(Boolean) : r.preClick ? [r.preClick] : [],
+    readOnlyRequests: require('./requests').normalizeRequests(project && project.readOnlyRequests, (project && project.url) || r.url, 'readOnlyRequests', { readOnly: true }),
+    writeRequests: require('./requests').normalizeRequests(project && (project.writeRequests || project.safety && project.safety.writeRequests), (project && project.url) || r.url, 'writeRequests'),
   };
 }
 
@@ -156,10 +158,12 @@ function launch(headless) {
   });
 }
 
-function newCtx(browser, storageState) {
-  const opt = { viewport: { width: 1440, height: 900 }, locale: 'zh-CN' };
+async function newCtx(browser, storageState, cfg) {
+  const opt = { viewport: { width: 1440, height: 900 }, locale: 'zh-CN', serviceWorkers: 'block' };
   if (storageState) opt.storageState = storageState;
-  return browser.newContext(opt);
+  const context = await browser.newContext(opt);
+  context.requestGuard = await require('./requests').installRequestGuard(context, { ...cfg, pageUrl: cfg.url });
+  return context;
 }
 
 /**
@@ -497,17 +501,22 @@ async function validateAuth(cfg, log) {
   const browser = await launch(true);
   let ctx = null;
   try {
-    ctx = await newCtx(browser, cfg.storagePath);
+    ctx = await newCtx(browser, cfg.storagePath, cfg);
     const page = await ctx.newPage();
     await page.goto(cfg.url, { waitUntil: 'domcontentloaded', timeout: 45000 });
     await page.waitForLoadState('networkidle', { timeout: 8000 }).catch(() => {});
     await sleep(1200);
+    ctx.requestGuard.assert();
     return await judge(page, cfg);
   } catch (e) {
+    if (ctx) ctx.requestGuard.assert();
+    if (e.code === 'REQUEST_POLICY') throw e;
     if (log) log('[登录] 校验登录态时出错（当作失效处理）：' + e.message.split('\n')[0]);
     return 'unknown';
   } finally {
+    if (ctx) ctx.requestGuard.close();
     await shutdown(browser, ctx);
+    if (ctx) ctx.requestGuard.assert();
   }
 }
 
@@ -523,13 +532,14 @@ async function captureLogin(cfg, log) {
   const browser = await launch(headless);
   let ctx = null;
   try {
-    ctx = await newCtx(browser, null);
+    ctx = await newCtx(browser, null, cfg);
     let page = await ctx.newPage();
 
     log('[登录] 打开：' + cfg.url);
     await page.goto(cfg.url, { waitUntil: 'domcontentloaded', timeout: 45000 });
     await page.waitForLoadState('networkidle', { timeout: 8000 }).catch(() => {});
     await sleep(800);
+    ctx.requestGuard.assert();
 
     for (const sel of cfg.preClick) {
       const loc = page.locator(sel).first();
@@ -583,6 +593,7 @@ async function captureLogin(cfg, log) {
 
       while (Date.now() < deadline) {
         await sleep(1000);
+        ctx.requestGuard.assert();
         page = activePage(ctx, page);
         if (!page || page.isClosed()) throw new Error('浏览器窗口被关掉了，登录没有完成。');
 
@@ -615,13 +626,16 @@ async function captureLogin(cfg, log) {
       }
     }
 
+    ctx.requestGuard.assert();
     fs.mkdirSync(path.dirname(cfg.storagePath), { recursive: true });
     await ctx.storageState({ path: cfg.storagePath });
     log('[登录] 成功，登录态已存到 ' + path.relative(HERE, cfg.storagePath));
     if (cfg.reuse) log('[登录] 以后再录同一个系统会自动复用，不用再登。');
     return cfg.storagePath;
   } finally {
+    if (ctx) ctx.requestGuard.close();
     await shutdown(browser, ctx);
+    if (ctx) ctx.requestGuard.assert();
   }
 }
 

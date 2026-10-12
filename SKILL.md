@@ -8,7 +8,7 @@ description: 为工作区里的 B 端业务系统（尤其 Vue3 + Element Plus�
 用户只需要告诉你**模块名**（如「订单管理」）。可选：开场白、结束语。当前环境能否写测试数据由你在第 2 步问用户。
 代码就在工作区里；系统由你自己跑起来。不要向用户要代码路径或系统地址，除非你确实找不到。
 
-**只在本地开发或独立测试环境使用。** 用户说「能写测试数据」后，写数据功能会真实保存（名称带「培训演示」前缀）。生产、共享演示环境一律按不能写处理。拿不准就当不能写，不要自己推定。
+**只在本地开发或独立测试环境使用。** 先由用户确认实际 URL 和能否写测试数据，再逐功能确认演练与正式录制各自取消或提交。测试环境也不能替用户作出提交决定。新建数据名称带「培训演示」前缀；生产、共享演示环境按不能写处理。
 
 产物：`<名字>.mp4`（配音 + 烧录字幕 + 片头片尾）、`<名字>手册.docx`（每步带红框截图）、`subs.srt`。
 
@@ -54,9 +54,10 @@ py -3 -m pip install -r requirements.txt        # 非 Windows 用 python3 -m pip
    ```yaml
    environment:
      name: 本地开发环境      # 或「生产环境」「测试环境」，旁白会用到
-     testData: true         # 能写测试数据时写数据功能默认真实提交，否则默认填完取消
+     testData: true         # 用户明确允许写测试数据；每轮提交前仍须确认本轮数据准备
    ```
-4. 确认能登录，记下：前端地址、登录地址、账号、登录成功后的地址、登录表单三个控件的选择器。还没有登录态时用 `node tools/snap.js - <登录页网址> login`（登录态文件写 `-`；只看一页时直接传网址，要点击、填写时才写步骤文件）查看登录页。各工具都支持 `--help`。
+4. 核对登录和查询代码，把认证 POST、POST 查询等确定不修改业务数据的接口写入脚本 `readOnlyRequests: [{method, url}]`。写功能的真实接口写入清单 `writeRequests`，含方法、来源、路径；动态路径只允许完整的 `{id}` 段。不要把查询与修改共用的 GraphQL / RPC 地址整体标为只读。WebSocket 只支持核对为只读的连接，写通道不开放。配置冲突会明确报错。
+5. 确认能登录，记下：前端地址、登录地址、账号、登录成功后的地址、登录表单三个控件的选择器。账号密码通过环境变量提供。各工具都支持 `--help`。页面发生 HTTP 重定向时，按错误提示配置最终页面地址；API 重定向逐跳检查授权。
 
 ### 3. 盘点功能清单
 
@@ -66,6 +67,7 @@ py -3 -m pip install -r requirements.txt        # 非 Windows 用 python3 -m pip
 - 校验：`node features.js <名字>.features.yaml`
 - **让用户确认**：`node app/server.js` 后请用户打开 `http://127.0.0.1:7788/features?f=<名字>.features.yaml`（或直接打开 `http://127.0.0.1:7788`，会列出全部清单）勾选并点确认；也可以在对话里列出清单让用户说改哪些，你改完后 `node features.js <清单> --yes`。
 - 未确认（`confirmedAt` 为空）的清单不能出片。
+- 写功能需分别选择 `rehearsalMode`（演练）和 `writeMode`（正式录制）。演练不预选取消或提交。任一阶段选择 submit，都要求 `environment.testData: true` 和已核对的 `writeRequests`。`--yes` 只可回写用户已经在对话里明确批准的清单，不能代替用户选择。
 - 盘点时发现的系统 bug（控件没接上逻辑、功能未接入）单独汇报给用户。
 
 ### 4. 准备演示账号和数据
@@ -89,19 +91,26 @@ py -3 -m pip install -r requirements.txt        # 非 Windows 用 python3 -m pip
 
 1. 写脚本头：`title / url / adapters / features / login / intro / outro / manual / pronounce`。登录段参照实例（`mode: auto`，`reuse: false`，`storage: output/auth.json`）。
 2. 按页面分批写场景，规则见 `scripts/prompts/scene-writer.md`。每批写完：
-   `node script.js <脚本>` → `node play.js --dry --scenes <本批范围>` → 失败就用 `tools/snap.js` 看页面、修、重跑。
+   `node script.js <脚本>` → `node play.js <脚本> --dry --scenes <本批范围>` → 失败就看报告、修、重跑。范围命中接续场景时会扩展到完整组，包含对应的取消或提交收尾。
    **开始写场景之前**先拿登录态：脚本头写好、`scenes:` 下先放一个只 `goto` 首页的占位场景，跑 `node produce.js <脚本> --dry --allow-uncovered`。它会自动登录并把登录态存到 `login.storage`，之后 `snap.js` 用这个文件。写好第一批场景后删掉占位场景。
    只写了部分功能时，`produce.js` 默认会因「已勾选但没有场景」退出，调试期间都带 `--allow-uncovered`；正式出片前去掉它，确认没有遗漏。
-3. 可以每页交给一个 subagent，但**必须串行**：演练共用 `output/script.json`。
-4. 全部写完：`node produce.js <脚本> --dry`（校验 + 全量演练 + 生成手册）。
+3. 可以每页交给一个 subagent，但**必须串行**：工具共用 output，直接 script / play / manual 入口也使用同一把锁。
+4. 写功能组尾必须提供对应的 `ending.cancel / ending.submit`，保存动作只能放在 submit 收尾；基础动作和取消分支不会获准写入。两轮选择不同收尾时，两种都要写。
+5. 全部写完：`node produce.js <脚本> --dry`（校验 + 全量演练 + 生成标有“演练”的手册）。每次执行会真实提交的演练，都会等待用户在本地确认页核对环境与本轮数据；Agent 不得代点提交确认。
 
 ### 6. 出片
 
 ```powershell
-node produce.js <脚本> --yes
+node app/server.js
+# 保持确认页可用，在另一个终端执行：
+node produce.js <脚本>
 ```
 
-约等于视频时长 + 几分钟。中途失败可从某一环节续跑：`--from tts / record / compose / cards`。配音按文本缓存，只有改过的旁白会重新合成。
+正式流程：演练 → TTS → 录制并截取正式手册素材 → 正式手册 → 合成 → 校验 → 片头片尾。正式录制若选择提交，会再次等待用户核对环境、确认演练数据已复位或已换用独立数据。确认仅对当前一轮、当前输入有效；不能沿用演练批准，也不能用无人值守选项代替。
+
+中途失败可续跑：`--from tts / record / manual / compose / cards`。每次都会重新校验指定 YAML、清单和所需产物的来源。更换脚本、环境或角色不能沿用旧产物；改变旁白先从 tts 开始，改变操作先从 check 开始。重新执行 submit 阶段仍需新确认。提交后断言、截图或录制失败时，报告会列出已发出的请求及响应状态；数据可能已经改变，先请用户核对数据再重跑，不自动回滚。
+
+手册素材分为 `output/manual/rehearsal/` 和 `output/manual/record/`。演练手册为 `<标题>（演练）.docx`，正式手册来自正式录制。直接调用也使用 YAML：`node play.js <脚本> --shots`、`node manual.js <脚本>`；演练手册用 `node manual.js <脚本> --rehearsal`。
 
 ### 7. 读音检查 → 交付
 
@@ -136,7 +145,7 @@ node produce.js <脚本> --yes
 
 ## 必须遵守
 
-- **写数据按确认结果处理**：环境能写测试数据（`environment.testData: true`）时默认真实保存，新建数据名称带「培训演示」前缀；不能写时填完取消。用户可在确认页逐项改。用快照工具探查页面时一律不点保存、确定、提交。
+- **写数据按两轮确认结果处理**：先确认环境，再分别确认演练和正式录制方式，以及本轮数据准备；测试环境允许用户选择真实保存。不能写数据的环境仅可取消。用快照工具探查页面时一律不点保存、确定、提交；写请求保护只覆盖登录和 play 执行器，不覆盖任意外部工具。
 - **写数据功能一定要讲到保存**：取消的场景也要先介绍保存按钮和保存后的效果，再说明原因（如「当前是生产环境，为避免写入测试数据，这里点击取消」）再取消，不能只说「这里仅作演示」。
 - **账号没权限的功能照样演示**：演示到禁用状态或拒绝提示，旁白如实说「演示账号没有权限，有资格的人会……」。
 - 旁白、手册里**不出现系统网址**；旁白不念演示数据的名称或编码。
@@ -150,7 +159,12 @@ node produce.js <脚本> --yes
 |---|---|
 | 演练卡在登录 | 确认登录段选择器；账号密码页在已登录时仍显示密码框的，用 `reuse: false` |
 | Element Plus 下拉选不中 | 用 `select` 动作，target 指向下拉框本身，value 写选项完整文字（如「姓名（账号）」） |
-| 弹窗里的结果截图没拍到 | 结果断言写弹窗标题文字；写数据功能的断言放在基础动作上，收尾断言放 `ending.cancel.expect` |
+| 弹窗里的结果截图没拍到 | 结果断言写弹窗标题文字；填写结果断言放在基础动作上，收尾结果按本阶段放 `ending.cancel.expect` 或 `ending.submit.expect` |
 | 确认框断言失败 | Element Plus 的确认框（`ElMessageBox`）和普通弹窗在无障碍树里是 `dialog`，标题是它的名称，里面**没有 heading**：写 `visible: { role: dialog, name: 关闭订单 }`，不要写 `role: heading` |
 | 配音合成超时（ConnectionTimeoutError） | 已自动重试 6 次；仍失败就 `--from tts` 续跑 |
 | 某功能有 bug、暂时不能演示 | 在清单里写 `blocked: 前端 bug：……` 并取消勾选，修好后去掉再勾选 |
+| 旧脚本提示缺 rehearsalMode / writeRequests | 核对接口，补齐两轮收尾选择，清除旧 confirmedAt 后请用户重新确认；场景本身不得填写内部字段 writeMode、writeRequests、expectAt、endExpect |
+| 旧产物不能续跑 | 新版本来源记录和阶段顺序已变，从 `node produce.js <脚本>` 重新生成；旧 script.json 不作为执行输入 |
+| output 留下已退出进程的锁 | 确认没有其他任务使用 output 后，手动移除 `output/.produce.lock`；工具不会自动回收并争抢锁 |
+
+请求保护依赖业务代码中真实的接口语义。未知 GET 默认作为读取；发现 GET 写接口必须列入 writeRequests（所有实际 API 来源都要列），该路径的 HEAD 请求也禁止默认放行。同一路径的读写规则不能重合，即使查询参数不同；共用接口需先解决接口区分。批准的地址按 URL 的查询参数精确匹配；已知写路径的其他参数也不会被默认 GET 放行。Service Worker 被关闭。HTTP API 重定向最多按 Playwright 默认的 20 跳检查，页面导航重定向明确报错，避免改变页面地址和资源语义。

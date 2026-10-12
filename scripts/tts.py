@@ -78,7 +78,7 @@ async def main():
         dur = duration_of(clip)
         if dur is None:
             sys.exit(f"读不到时长：{clip}")
-        manifest["scenes"][s["id"]] = {"file": str(clip.relative_to(HERE)).replace("\\", "/"), "dur": round(dur, 3)}
+        manifest["scenes"][s["id"]] = {"file": str(clip.relative_to(HERE)).replace("\\", "/"), "dur": round(dur, 3), "speech": spoken}
         print(f"  [{mark}] {s['id']}  {dur:5.2f}s  {spoken}")
 
     (OUT / "tts").mkdir(parents=True, exist_ok=True)

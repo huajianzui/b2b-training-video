@@ -5,7 +5,7 @@ const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
-const { spawnSync } = require('node:child_process');
+const { spawnSync, spawn } = require('node:child_process');
 const { loadScript } = require('../script');
 const { acquireLock } = require('../pipeline');
 
@@ -17,6 +17,7 @@ function fixture(t) {
   const root = path.join(temp, 'runtime');
   fs.cpSync(scripts, root, { recursive: true, filter: (file) => !['node_modules', 'output', 'tests', 'assets'].includes(path.basename(file)) });
   fs.mkdirSync(path.join(root, 'output'));
+  fs.symlinkSync(path.join(scripts, 'node_modules'), path.join(root, 'node_modules'), 'junction');
   const file = path.join(root, 'demo.yaml');
   fs.writeFileSync(file, yaml());
   fs.writeFileSync(path.join(root, 'output', 'script.json'), JSON.stringify(loadScript(file)));
@@ -59,7 +60,7 @@ function seed(f) {
   const p = openPipeline(f.out, script, 'script', { manual: false });
   fs.writeFileSync(path.join(f.out, 'check-report.json'), '{"ok":true}');
   p.complete('check', ['check-report.json']);
-  fs.mkdirSync(path.join(f.out, 'tts'));
+  fs.mkdirSync(path.join(f.out, 'tts'), { recursive: true });
   fs.writeFileSync(path.join(f.out, 'tts', 'view.mp3'), 'fixture-audio');
   fs.writeFileSync(path.join(f.out, 'tts', 'manifest.json'), JSON.stringify({ scenes: { view: { file: 'output/tts/view.mp3', dur: 1 } } }));
   p.complete('tts', ['tts/manifest.json', 'tts/view.mp3']);
@@ -149,6 +150,47 @@ test('共用 output 的流水线不能并行覆盖产物，释放锁后可以继
   assert.equal(fs.existsSync(path.join(f.out, '.produce.lock')), false);
 });
 
+test('旧版本缓存与只有演练素材的手册续跑明确拒绝', (t) => {
+  const f = fixture(t); seed(f);
+  const file = path.join(f.out, 'pipeline.json');
+  const state = JSON.parse(fs.readFileSync(file)); state.version = 1;
+  fs.writeFileSync(file, JSON.stringify(state));
+  const legacy = f.run('demo.yaml', 'compose'); assert.equal(legacy.status, 2); assert.match(legacy.stderr, /旧产物|来源/);
+  seed(f);
+  const manual = spawnSync(process.execPath, [path.join(f.root, 'produce.js'), 'demo.yaml', '--from', 'manual', '--dry'],
+    { cwd: f.root, env: { ...process.env, NODE_PATH: path.join(scripts, 'node_modules') }, encoding: 'utf8' });
+  assert.equal(manual.status, 2); assert.match(manual.stderr, /manual\/record\/steps.json/);
+});
+
+test('produce 的锁也阻止直接 script、play、manual 入口覆盖共用输出', (t) => {
+  const f = fixture(t), release = acquireLock(f.out);
+  const original = fs.readFileSync(path.join(f.out, 'script.json'), 'utf8');
+  try {
+    for (const [name, flags] of [['script.js', []], ['play.js', ['--dry']], ['manual.js', []]]) {
+      const r = spawnSync(process.execPath, [path.join(f.root, name), 'demo.yaml', ...flags],
+        { cwd: f.root, env: { ...process.env, NODE_PATH: path.join(scripts, 'node_modules') }, encoding: 'utf8' });
+      assert.notEqual(r.status, 0); assert.match(r.stderr, /已有流水线/);
+    }
+    assert.equal(fs.readFileSync(path.join(f.out, 'script.json'), 'utf8'), original);
+    const foreign = spawnSync(process.execPath, ['-e', `const {spawnSync}=require('child_process'); const r=spawnSync(process.execPath,[process.argv[1],'demo.yaml'],{cwd:process.cwd(),env:process.env,encoding:'utf8'}); process.stdout.write(r.stderr); process.exit(r.status);`, path.join(f.root, 'script.js')],
+      { cwd: f.root, env: { ...process.env, ...release.env, NODE_PATH: path.join(scripts, 'node_modules') }, encoding: 'utf8' });
+    assert.equal(foreign.status, 1); assert.match(foreign.stdout, /已有流水线/);
+  } finally { release(); }
+});
+
+test('两个进程同时遇到死 pid 锁时均明确拒绝，不自动删除或抢占锁', { timeout: 60000 }, async (t) => {
+  const f = fixture(t);
+  const file = path.join(f.out, '.produce.lock'), value = JSON.stringify({ pid: 2147483647, token: 'fixture-owner' });
+  fs.writeFileSync(file, value);
+  const start = () => new Promise((resolve) => {
+    const child = spawn(process.execPath, [path.join(f.root, 'script.js'), 'demo.yaml'], { cwd: f.root, env: { ...process.env, NODE_PATH: path.join(scripts, 'node_modules') } });
+    let stderr = ''; child.stderr.on('data', (b) => { stderr += b; }); child.on('close', (code) => resolve({ code, stderr }));
+  });
+  const results = await Promise.all([start(), start()]);
+  for (const r of results) { assert.equal(r.code, 1); assert.match(r.stderr, /已退出/); }
+  assert.equal(fs.readFileSync(file, 'utf8'), value);
+});
+
 test('真实浏览器演练和 Word 生成留下可用于续跑的阶段记录', (t) => {
   const executablePath = process.env.TEST_BROWSER_PATH;
   if (!executablePath) return t.skip('设置 TEST_BROWSER_PATH 后运行真实浏览器流水线回归');
@@ -166,10 +208,11 @@ test('真实浏览器演练和 Word 生成留下可用于续跑的阶段记录',
   assert.equal(result.status, 0, result.stdout + result.stderr);
   const state = JSON.parse(fs.readFileSync(path.join(f.out, 'pipeline.json'), 'utf8'));
   assert.ok(state.stages.check);
-  assert.ok(state.stages.manual);
+  assert.ok(state.stages.rehearsalManual);
+  assert.equal(state.stages.manual, undefined);
   assert.match(result.stderr, /从 script 重新生成/);
   assert.ok(state.stages.check.artifacts.some((a) => a.file.endsWith('.png')));
-  assert.ok(fs.statSync(path.join(f.out, '演练回归手册.docx')).size > 1000);
+  assert.ok(fs.statSync(path.join(f.out, '演练回归手册（演练）.docx')).size > 1000);
   const { openPipeline } = require(path.join(f.root, 'pipeline'));
   const script = loadScript(f.file);
   assert.doesNotThrow(() => openPipeline(f.out, script, 'tts'));

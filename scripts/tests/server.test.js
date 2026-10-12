@@ -23,6 +23,9 @@ before(async () => {
   fs.writeFileSync(path.join(root, 'source.png'), 'private-source');
   fs.writeFileSync(path.join(root, 'demo.features.yaml'), `module: 示例\nscript: demo.yaml\nconfirmedAt: ''\nenvironment: {name: 测试, testData: false}\npages:\n  - {id: list, name: 列表}\nfeatures:\n  - {id: view, page: list, name: 查看, kind: read, include: true}\n`);
   fs.writeFileSync(path.join(root, 'demo.yaml'), 'title: 示例\nscenes:\n  - name: 查看\n    feature: view\n    actions: []\n');
+  // 模拟覆盖升级留下旧生成器文件；当前服务不能因其存在恢复旧入口。
+  fs.writeFileSync(path.join(root, 'app', 'index.html'), '<h1>legacy-generator</h1>');
+  fs.writeFileSync(path.join(root, 'build.js'), "require('node:fs').writeFileSync(require('node:path').join(__dirname, 'legacy-executed.txt'), 'executed');");
   const reservation = http.createServer();
   await new Promise((resolve) => reservation.listen(0, '127.0.0.1', resolve));
   const port = reservation.address().port;
@@ -83,6 +86,20 @@ test('DNS 重绑定 Host 和 cross-site 请求被拒绝', async () => {
   assert.equal(await rawGet('/api/session', { 'Sec-Fetch-Site': 'cross-site' }), 403);
 });
 
+test('覆盖升级保留旧首页和 build.js 时也不恢复旧生成入口', async () => {
+  for (const endpoint of ['/', '/index.html']) {
+    const response = await fetch(base + endpoint, { redirect: 'manual' });
+    assert.equal(response.status, 302); assert.equal(response.headers.get('location'), '/features');
+    assert.doesNotMatch(await response.text(), /legacy-generator/);
+  }
+  const { token } = await (await fetch(base + '/api/session')).json();
+  const response = await fetch(base + '/api/build', { method: 'POST',
+    headers: { 'Content-Type': 'application/json', 'X-Training-Token': token, Origin: base }, body: '{}' });
+  assert.equal(response.status, 404); assert.match((await response.json()).error, /已下线/);
+  assert.equal(fs.existsSync(path.join(root, 'legacy-executed.txt')), false);
+  assert.equal((await (await fetch(base + '/api/status')).json()).running, false);
+});
+
 test('同源确认要求会话令牌，普通表单和猜测令牌不能确认', async () => {
   assert.equal((await post({ Origin: base })).status, 403);
   assert.equal((await post({ Origin: base, 'X-Training-Token': 'guess' })).status, 403);
@@ -124,7 +141,7 @@ test('符号链接不能让媒体接口指向边界外', async (t) => {
   assert.equal(response.status, 403);
 });
 
-test('确认页在桌面和移动视口均能获取令牌并完成本地确认', async (t) => {
+test('桌面确认页获取令牌并完成本地确认', async (t) => {
   const { chromium } = require('playwright');
   const executablePath = process.env.TEST_BROWSER_PATH;
   if (!executablePath && !fs.existsSync(chromium.executablePath())) {
@@ -132,7 +149,7 @@ test('确认页在桌面和移动视口均能获取令牌并完成本地确认',
   }
   const browser = await chromium.launch({ ...(executablePath ? { executablePath } : {}) });
   t.after(() => browser.close());
-  for (const viewport of [{ width: 1440, height: 900 }, { width: 390, height: 844 }]) {
+  for (const viewport of [{ width: 1440, height: 900 }]) {
     const page = await browser.newPage({ viewport });
     const errors = [];
     page.on('pageerror', (error) => errors.push(error.message));

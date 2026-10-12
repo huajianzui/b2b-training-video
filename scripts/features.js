@@ -11,7 +11,7 @@
  *   confirmedAt: ~                       确认页点「确认」后写入；为空时不允许出片
  *   environment:                         录制用的环境（出片前和用户确认）
  *     name: 本地开发环境                  旁白里会提到，如「当前是生产环境」
- *     testData: true                     能否写入测试数据：true 时写数据功能默认真实提交，否则默认填完取消
+ *     testData: true                     用户是否允许写测试数据；每轮提交还要确认本轮数据准备
  *   pages:
  *     - id: list
  *       name: 订单列表
@@ -34,17 +34,20 @@
  *       source: views/order/OrderListView.vue:6
  *       include: true                    是否演示（确认页回写；不写按默认规则）
  *       writeMode: cancel                写数据怎么处理：cancel 填完取消 | submit 真实提交（确认页回写；不写按 environment.testData 取默认）
+ *       rehearsalMode: ~                 演练取消或提交，由用户单独选择；未选择不能执行写功能
+ *       writeRequests: [{method: POST, url: /api/orders}]  实际写接口，来自业务代码
  *       status: new | removed            改版后对比时标注，确认后清除
  *
  * 用法：
  *   node features.js <清单>                         校验并打印摘要
- *   node features.js <清单> --yes                   按当前勾选直接确认（无人值守）
+ *   node features.js <清单> --yes                   记录用户已经明确批准的当前选择
  *   node features.js merge <已确认清单> <新盘点清单>   对比后写回已确认清单：新增的标 new，消失的标 removed
  */
 
 const fs = require('fs');
 const path = require('path');
 const { requireFrom } = require('./deps');
+const { normalizeRequests } = require('./requests');
 
 const KINDS = ['read', 'write'];
 const WRITE_MODES = ['cancel', 'submit'];
@@ -84,6 +87,9 @@ function normalize(raw, file) {
     if (!KINDS.includes(kind)) throw new FeatureError(w + '「' + id + '」：kind 只能是 ' + KINDS.join(' / '));
     const writeMode = str(f.writeMode) || defaultWriteMode;
     if (!WRITE_MODES.includes(writeMode)) throw new FeatureError(w + '「' + id + '」：writeMode 只能是 ' + WRITE_MODES.join(' / '));
+    const rehearsalMode = str(f.rehearsalMode);
+    if (rehearsalMode && !WRITE_MODES.includes(rehearsalMode)) throw new FeatureError(w + '：rehearsalMode 只能是 cancel / submit');
+    normalizeRequests(f.writeRequests, 'https://policy.invalid/', w + ' writeRequests');
     const blocked = str(f.blocked);
     const minor = !!f.minor;
     const shared = str(f.shared);
@@ -103,6 +109,8 @@ function normalize(raw, file) {
       source: str(f.source),
       include: f.include === undefined ? !blocked && !minor && !shared : !!f.include,
       writeMode,
+      rehearsalMode,
+      writeRequests: (f.writeRequests || []).map((r) => ({ method: r.method.toUpperCase(), url: r.url })),
       status: str(f.status),
     };
   });
@@ -123,11 +131,21 @@ function loadFeatures(file) {
   return normalize(readDoc(file).toJS(), file);
 }
 
+function validateDecisions(manifest, { requireRehearsal = true } = {}) {
+  for (const f of manifest.features.filter((f) => f.include && f.kind === 'write' && f.status !== 'removed')) {
+    if (requireRehearsal && !f.rehearsalMode) throw new FeatureError('功能「' + f.name + '」缺少 rehearsalMode：请在确认页单独选择演练取消或真实提交。');
+    if (f.writeMode === 'submit' || f.rehearsalMode === 'submit') {
+      if (!manifest.environment.testData) throw new FeatureError('环境不允许写测试数据（environment.testData 不是 true），功能「' + f.name + '」不能 submit。');
+      if (!f.writeRequests.length) throw new FeatureError('功能「' + f.name + '」缺少 writeRequests：核对业务代码后填写真实提交接口，再重新确认。');
+    }
+  }
+}
+
 const findFeatureNode = (doc, id) => doc.get('features').items.find((n) => str(n.get('id')) === id);
 
 /**
- * 确认页回写：只改 include / writeMode / status / confirmedAt，其余内容和注释原样保留。
- * decisions: { [id]: { include, writeMode } }
+ * 确认页回写 include / writeMode / rehearsalMode / status / confirmedAt，其余内容和注释原样保留。
+ * decisions: { [id]: { include, writeMode, rehearsalMode } }
  */
 function saveDecisions(file, decisions, confirm) {
   const doc = readDoc(file);
@@ -140,7 +158,14 @@ function saveDecisions(file, decisions, confirm) {
       if (!WRITE_MODES.includes(d.writeMode)) throw new FeatureError('「' + id + '」writeMode 不合法：' + d.writeMode);
       node.set('writeMode', d.writeMode);
     }
+    if (d.rehearsalMode !== undefined) {
+      if (d.rehearsalMode !== '' && !WRITE_MODES.includes(d.rehearsalMode)) throw new FeatureError('「' + id + '」rehearsalMode 不合法');
+      node.set('rehearsalMode', d.rehearsalMode);
+    }
   }
+  const updated = normalize(doc.toJS(), file);
+  validateDecisions(updated, { requireRehearsal: !!confirm });
+  if (!confirm && JSON.stringify(current.features) !== JSON.stringify(updated.features)) doc.set('confirmedAt', null);
   if (confirm) {
     for (const f of current.features) {
       if (!f.status) continue;
@@ -173,19 +198,25 @@ function mergeFresh(savedFile, freshFile) {
       added.push(f.id);
       return Object.assign({}, f, { status: 'new' });
     }
-    return Object.assign({}, f, { include: prev.include, writeMode: prev.writeMode, status: '' });
+    return Object.assign({}, f, { include: prev.include, writeMode: prev.writeMode, rehearsalMode: prev.rehearsalMode, status: '' });
   });
   const freshIds = new Set(fresh.features.map((f) => f.id));
   const removed = saved.features.filter((f) => !freshIds.has(f.id) && f.status !== 'removed');
   for (const f of removed) features.push(Object.assign({}, f, { include: false, status: 'removed' }));
 
-  const changed = added.length > 0 || removed.length > 0;
+  const permissionsChanged = features.some((f) => {
+    const prev = old.get(f.id);
+    return prev && (f.kind !== prev.kind || JSON.stringify(f.writeRequests) !== JSON.stringify(prev.writeRequests));
+  });
+  const changed = added.length > 0 || removed.length > 0 || permissionsChanged;
+  const savedEnvironment = readDoc(savedFile).toJS().environment;
   const out = {
     module: fresh.module || saved.module,
     script: saved.script || fresh.script,
     generatedBy: fresh.generatedBy,
     generatedAt: fresh.generatedAt,
     confirmedAt: changed ? null : saved.confirmedAt || null,
+    environment: savedEnvironment || readDoc(freshFile).toJS().environment || saved.environment,
     pages: fresh.pages.map((p) => {
       const o = { id: p.id, name: p.name };
       if (p.entry) o.entry = p.entry;
@@ -198,7 +229,11 @@ function mergeFresh(savedFile, freshFile) {
       for (const k of ['desc', 'how', 'permission', 'when', 'requires', 'blocked', 'shared', 'source']) if (f[k]) o[k] = f[k];
       if (f.minor) o.minor = true;
       o.include = f.include;
-      if (f.kind === 'write') o.writeMode = f.writeMode;
+      if (f.kind === 'write') {
+        o.writeMode = f.writeMode;
+        if (f.rehearsalMode) o.rehearsalMode = f.rehearsalMode;
+        if (f.writeRequests.length) o.writeRequests = f.writeRequests;
+      }
       if (f.status) o.status = f.status;
       return o;
     }),
@@ -207,7 +242,7 @@ function mergeFresh(savedFile, freshFile) {
   return { added, removed: removed.map((f) => f.id), changed };
 }
 
-module.exports = { loadFeatures, saveDecisions, mergeFresh, FeatureError, WRITE_MODES };
+module.exports = { loadFeatures, saveDecisions, validateDecisions, mergeFresh, FeatureError, WRITE_MODES };
 
 if (require.main === module) {
   const argv = process.argv.slice(2);

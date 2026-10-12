@@ -2,14 +2,14 @@
 /**
  * 一键出片（新流水线）—— 以 script.yaml 为唯一输入
  *
- *   校验脚本 → 准备登录态 → 演练（无头快速走一遍，顺带截手册配图）→ 生成操作手册
- *     → 合成旁白 → 按旁白节奏录制 → 后期（字幕 + 音轨）→ 元数据校验 → 片头片尾
+ *   校验脚本 → 准备登录态 → 演练 → 合成旁白 → 录制并截取正式手册素材
+ *     → 生成正式手册 → 后期（字幕 + 音轨）→ 元数据校验 → 片头片尾
  *
  * 用法：
  *   node produce.js [script.yaml]          完整出片（视频 + 手册）
  *   node produce.js --dry                  只校验 + 演练 + 出手册，不录制
  *   node produce.js --no-manual            不生成手册
- *   node produce.js --from compose         从某一环节开始（script / login / check / manual / tts / record / compose / verify / cards）
+ *   node produce.js --from compose         从某一环节开始（script / login / check / tts / record / manual / compose / verify / cards）
  *   node produce.js --skip-check           跳过演练
  *   node produce.js --relogin / --no-login
  *   node produce.js --no-cards             不加片头片尾
@@ -25,6 +25,7 @@ const { loadScript, asLoginProject, DEFAULT_OUT: SCRIPT_JSON } = require('./scri
 const { ensureLoggedIn } = require('./login');
 const { ffmpegPath } = require('./deps');
 const { STEPS, openPipeline, acquireLock, manualArtifacts } = require('./pipeline');
+const { executionHash } = require('./requests');
 
 const HERE = __dirname;
 const OUT = path.join(HERE, 'output');
@@ -105,12 +106,13 @@ if (Number(process.versions.node.split('.')[0]) < 20) {
 }
 
 (async () => {
-  let script;
+  let script, rehearsalScript;
   // 续跑也必须重新解析指定 YAML；旧 JSON 不能替代确认和脚本校验。
   {
     console.log('\n==================== ' + tag('script') + '  校验脚本 ====================');
     try {
       script = loadScript(SCRIPT_FILE);
+      rehearsalScript = loadScript(SCRIPT_FILE, { stage: 'rehearsal' });
     } catch (e) {
       if (e.code === 'UNCONFIRMED') {
         fail('[待确认] ' + e.message + '\n  确认页：node app/server.js 后打开 http://127.0.0.1:7788/features?f='
@@ -142,10 +144,11 @@ if (Number(process.versions.node.split('.')[0]) < 20) {
 
   const release = acquireLock(OUT);
   process.once('exit', release);
+  for (const [signal, code] of [['SIGINT', 130], ['SIGTERM', 143]]) process.once(signal, () => process.exit(code));
   const pipeline = openPipeline(OUT, script, FROM, { manual: MANUAL, skipCheck: has('skip-check') });
   fs.writeFileSync(SCRIPT_JSON, JSON.stringify(script, null, 2), 'utf8');
 
-  const env = {};
+  const env = { ...release.env };
   if (has('no-login')) {
     env.REC_NO_LOGIN = '1';
   } else if (should('login')) {
@@ -161,22 +164,23 @@ if (Number(process.versions.node.split('.')[0]) < 20) {
   if (!should('login') && (has('relogin') || pipeline.authChanged)) env.REC_RELOGIN = '1';
 
   if (should('check') && !has('skip-check')) {
-    const args = [path.join(HERE, 'play.js'), '--dry'];
-    if (MANUAL) args.push('--shots');
-    const code = run(tag('check') + '  演练（不录像，验证每一步与断言' + (MANUAL ? '，顺带截取手册配图' : '') + '）', NODE, args, env);
+    const args = [path.join(HERE, 'play.js'), SCRIPT_FILE, '--dry'];
+    if (MANUAL && has('dry')) args.push('--shots');
+    const code = run(tag('check') + '  演练（按已确认的演练方式验证每一步与断言）', NODE, args, env);
     if (code !== 0) fail('演练未通过，已中止 —— 现场截图与页面结构见 output/run-report.json');
+    const report = JSON.parse(fs.readFileSync(path.join(OUT, 'run-report.json'), 'utf8'));
+    if (!report.ok || report.input !== executionHash(rehearsalScript)) fail('演练来源已变化，请重新开始。');
     fs.copyFileSync(path.join(OUT, 'run-report.json'), path.join(OUT, 'check-report.json'));
-    pipeline.complete('check', ['check-report.json', ...(MANUAL ? manualArtifacts(OUT) : [])]);
-  }
-
-  if (should('manual') && MANUAL) {
-    pipeline.requireStage('check', ['manual/steps.json']);
-    if (run(tag('manual') + '  生成操作手册（Word）', NODE, [path.join(HERE, 'manual.js')]) !== 0) fail('手册生成失败。');
-    pipeline.complete('manual', [script.manual.title.replace(/[\\/:*?"<>|]/g, '_').trim() + '.docx']);
+    pipeline.complete('check', ['check-report.json', ...(MANUAL && has('dry') ? manualArtifacts(OUT, 'rehearsal') : [])]);
   }
 
   if (has('dry')) {
-    console.log('\n（--dry：到此为止' + (MANUAL && should('manual') ? '，手册已生成' : '') + '。去掉 --dry 正式出片。）');
+    if (MANUAL && should('check') && !has('skip-check')) {
+      pipeline.requireStage('check', ['manual/rehearsal/steps.json']);
+      if (run('生成演练手册（Word）', NODE, [path.join(HERE, 'manual.js'), SCRIPT_FILE, '--rehearsal'], env) !== 0) fail('演练手册生成失败。');
+      pipeline.complete('rehearsalManual', [script.manual.title.replace(/[\\/:*?"<>|]/g, '_').trim() + '（演练）.docx']);
+    }
+    console.log('\n（--dry：到此为止，未执行旁白与正式录制环节。去掉 --dry 正式出片。）');
     process.exit(0);
   }
 
@@ -190,10 +194,19 @@ if (Number(process.versions.node.split('.')[0]) < 20) {
   }
 
   if (should('record')) {
-    const args = [path.join(HERE, 'play.js')];
+    const args = [path.join(HERE, 'play.js'), SCRIPT_FILE];
+    if (MANUAL) args.push('--shots');
     if (has('headed')) args.push('--headed');
     if (run(tag('record') + '  按旁白节奏录制', NODE, args, env) !== 0) fail('录制失败，详情见 output/run-report.json');
-    pipeline.complete('record', ['raw.webm', 'session.json', 'run-report.json']);
+    const report = JSON.parse(fs.readFileSync(path.join(OUT, 'run-report.json'), 'utf8'));
+    if (!report.ok || report.input !== executionHash(script)) fail('录制来源已变化，请重新开始。');
+    pipeline.complete('record', ['raw.webm', 'session.json', 'run-report.json', ...(MANUAL ? manualArtifacts(OUT, 'record') : [])]);
+  }
+
+  if (should('manual') && MANUAL) {
+    pipeline.requireStage('record', ['manual/record/steps.json']);
+    if (run(tag('manual') + '  生成正式操作手册（Word）', NODE, [path.join(HERE, 'manual.js'), SCRIPT_FILE], env) !== 0) fail('手册生成失败。');
+    pipeline.complete('manual', [script.manual.title.replace(/[\\/:*?"<>|]/g, '_').trim() + '.docx']);
   }
 
   if (should('compose') || should('cards')) ensureFonts();

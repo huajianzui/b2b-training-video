@@ -5,8 +5,9 @@ const fs = require('fs');
 const path = require('path');
 const crypto = require('crypto');
 const { normLogin } = require('./login');
+const { acquireLock } = require('./lock');
 
-const STEPS = ['script', 'login', 'check', 'manual', 'tts', 'record', 'compose', 'verify', 'cards'];
+const STEPS = ['script', 'login', 'check', 'tts', 'record', 'manual', 'compose', 'verify', 'cards'];
 const digest = (value) => crypto.createHash('sha256').update(JSON.stringify(value)).digest('hex');
 
 function fileHash(file) {
@@ -23,17 +24,20 @@ function fileHash(file) {
 function fingerprints(script) {
   const features = script.features ? fileHash(script.features.file) : '';
   const identity = digest({ source: fs.realpathSync(script.source), url: script.url, login: normLogin(script) });
-  const actions = script.scenes.map((s) => ({ id: s.id, continue: s.continue, feature: s.feature,
+  const rehearsal = require('./script').loadScript(script.source, { stage: 'rehearsal' });
+  const actions = rehearsal.scenes.map((s) => ({ id: s.id, continue: s.continue, feature: s.feature,
     actions: s.actions.map(({ cue, at, ...a }) => a), expect: s.expect, expectAt: s.expectAt, endExpect: s.endExpect }));
-  const check = digest({ identity, features, adapters: script.adapters, actions });
-  const manual = digest({ check, title: script.title, manual: script.manual, sharedGuide: script.sharedGuide,
+  const check = digest({ identity, features, adapters: rehearsal.adapters, actions, requests: rehearsal.readOnlyRequests, safety: rehearsal.safety });
+  const documentation = { title: script.title, manual: script.manual, sharedGuide: script.sharedGuide,
     overview: script.manual.overview || (script.intro && script.intro.narration),
     shared: script.features && script.features.shared,
-    scenes: script.scenes.map((s) => ({ id: s.id, name: s.name, narration: s.narration, doc: s.doc })) });
+    scenes: script.scenes.map((s) => ({ id: s.id, name: s.name, narration: s.narration, doc: s.doc })) };
   const tts = digest({ voice: script.voice, rate: script.rate, scenes: script.scenes.map((s) => ({ id: s.id, speech: s.speech })) });
-  const record = digest({ check, tts, scenes: script.scenes });
+  const record = digest({ identity, features, adapters: script.adapters, tts, scenes: script.scenes,
+    requests: script.readOnlyRequests, safety: script.safety });
+  const manual = digest({ record, ...documentation });
   const compose = digest({ record, watermark: script.watermark });
-  return { identity, check, manual, tts, record, compose };
+  return { identity, check, manual, rehearsalManual: digest({ check, ...documentation }), tts, record, compose };
 }
 
 function artifact(out, rel) {
@@ -61,15 +65,15 @@ function openPipeline(out, script, from, { manual = true, skipCheck = false } = 
       console.warn('[produce] 续跑记录损坏；本次从 script 重新生成，不复用旧产物。');
     }
   }
-  const resumable = STEPS.indexOf(from) >= STEPS.indexOf('manual');
-  if (resumable && (!previous || previous.version !== 1 || !previous.stages)) {
+  const resumable = STEPS.indexOf(from) >= STEPS.indexOf('tts');
+  if (resumable && (!previous || previous.version !== 2 || !previous.stages)) {
     throw new Error('旧产物缺少可靠的续跑来源记录，请从 script 环节开始（node produce.js <脚本.yaml>）。');
   }
   if (resumable && previous.identity !== hashes.identity) {
     throw new Error('续跑产物属于其他脚本、环境或登录角色，请从 script 环节开始。');
   }
-  const state = previous && previous.version === 1 && previous.stages && previous.identity === hashes.identity && from !== 'script'
-    ? previous : { version: 1, source: fs.realpathSync(script.source), identity: hashes.identity, stages: {} };
+  const state = previous && previous.version === 2 && previous.stages && previous.identity === hashes.identity && from !== 'script'
+    ? previous : { version: 2, source: fs.realpathSync(script.source), identity: hashes.identity, stages: {} };
 
   function requireStage(stage, requiredFiles = []) {
     const saved = state.stages[stage];
@@ -85,10 +89,10 @@ function openPipeline(out, script, from, { manual = true, skipCheck = false } = 
 
   if (resumable) {
     const index = STEPS.indexOf(from);
-    if (index <= STEPS.indexOf('record') && !skipCheck) requireStage('check', from === 'manual' && manual ? ['manual/steps.json'] : []);
+    if (index <= STEPS.indexOf('record') && !skipCheck) requireStage('check');
+    if (['record', 'manual', 'compose'].includes(from)) requireStage('tts', ['tts/manifest.json']);
+    if (['manual', 'compose'].includes(from)) requireStage('record', ['raw.webm', 'session.json', ...(manual ? ['manual/record/steps.json'] : [])]);
     if (manual && index > STEPS.indexOf('manual')) requireStage('manual');
-    if (from === 'record' || from === 'compose') requireStage('tts', ['tts/manifest.json']);
-    if (from === 'compose') requireStage('record', ['raw.webm', 'session.json']);
     if (from === 'verify' || from === 'cards') requireStage('compose', ['demo-voiced.mp4', 'subs.srt']);
   }
 
@@ -101,6 +105,7 @@ function openPipeline(out, script, from, { manual = true, skipCheck = false } = 
 
   // 在执行前撤销本阶段和下游的完成记录；失败后不能复用上次成功的残留产物。
   for (const stage of STEPS.slice(STEPS.indexOf(from))) delete state.stages[stage];
+  if (STEPS.indexOf(from) <= STEPS.indexOf('check')) delete state.stages.rehearsalManual;
   save();
   return {
     authChanged: !previous || previous.identity !== hashes.identity,
@@ -113,31 +118,11 @@ function openPipeline(out, script, from, { manual = true, skipCheck = false } = 
   };
 }
 
-function acquireLock(out) {
-  fs.mkdirSync(out, { recursive: true });
-  const file = path.join(out, '.produce.lock');
-  const token = crypto.randomBytes(16).toString('hex');
-  if (fs.existsSync(file)) {
-    let owner;
-    try { owner = JSON.parse(fs.readFileSync(file, 'utf8')); }
-    catch { throw new Error('流水线锁损坏，请检查 output/.produce.lock；未自动覆盖。'); }
-    if (!Number.isInteger(owner.pid) || owner.pid <= 0) throw new Error('流水线锁的进程编号无效，未自动覆盖。');
-    try { process.kill(owner.pid, 0); }
-    catch (error) { if (error.code === 'ESRCH') fs.unlinkSync(file); else throw new Error('无法验证现有流水线进程，已拒绝并行出片。'); }
-    if (fs.existsSync(file)) throw new Error('已有流水线使用 output，请等待完成后再运行。');
-  }
-  const fd = fs.openSync(file, 'wx');
-  try { fs.writeFileSync(fd, JSON.stringify({ pid: process.pid, token })); }
-  finally { fs.closeSync(fd); }
-  return () => {
-    if (fs.existsSync(file) && JSON.parse(fs.readFileSync(file, 'utf8')).token === token) fs.unlinkSync(file);
-  };
-}
-
-function manualArtifacts(out) {
-  const material = JSON.parse(fs.readFileSync(path.join(out, 'manual', 'steps.json'), 'utf8'));
+function manualArtifacts(out, stage) {
+  const file = path.join('manual', stage, 'steps.json');
+  const material = JSON.parse(fs.readFileSync(path.join(out, file), 'utf8'));
   const shots = material.scenes.flatMap((s) => [...s.steps.map((st) => st.shot), s.result && s.result.shot]).filter(Boolean);
-  return ['manual/steps.json', ...new Set(shots.map((file) => path.relative(out, path.resolve(path.dirname(out), file))))];
+  return [file.replace(/\\/g, '/'), ...new Set(shots.map((file) => path.relative(out, path.resolve(path.dirname(out), file))))];
 }
 
 module.exports = { STEPS, openPipeline, acquireLock, manualArtifacts };
