@@ -21,25 +21,33 @@ function fileHash(file) {
   return hash.digest('hex');
 }
 
+function codeHash(files) {
+  return digest(files.map((file) => ({ file, hash: fileHash(path.join(__dirname, file)) })));
+}
+
 function fingerprints(script, bgm) {
   const features = script.features ? fileHash(script.features.file) : '';
   const identity = digest({ source: fs.realpathSync(script.source), url: script.url, login: normLogin(script) });
   const rehearsal = require('./script').loadScript(script.source, { stage: 'rehearsal' });
+  const browserCode = codeHash(['script.js', 'features.js', 'play.js', 'requests.js', 'confirmation.js', 'login.js', 'media.js', 'deps.js',
+    ...fs.readdirSync(path.join(__dirname, 'adapters')).filter((file) => file.endsWith('.js')).sort().map((file) => 'adapters/' + file)]);
+  const manualCode = codeHash(['manual.js']);
   const actions = rehearsal.scenes.map((s) => ({ id: s.id, continue: s.continue, feature: s.feature,
     actions: s.actions.map(({ cue, at, ...a }) => a), expect: s.expect, expectAt: s.expectAt, endExpect: s.endExpect }));
-  const check = digest({ identity, features, adapters: rehearsal.adapters, actions, requests: rehearsal.readOnlyRequests, safety: rehearsal.safety });
+  const check = digest({ identity, features, implementation: browserCode, adapters: rehearsal.adapters, actions, requests: rehearsal.readOnlyRequests, safety: rehearsal.safety });
   const documentation = { title: script.title, manual: script.manual, sharedGuide: script.sharedGuide,
+    coverSubtitle: script.intro && script.intro.subtitle, watermark: script.watermark,
     overview: script.manual.overview || (script.intro && script.intro.narration),
     shared: script.features && script.features.shared,
     scenes: script.scenes.map((s) => ({ id: s.id, name: s.name, narration: s.narration, doc: s.doc })) };
-  const tts = digest({ voice: script.voice, rate: script.rate, scenes: script.scenes.map((s) => ({ id: s.id, speech: s.speech })) });
-  const record = digest({ identity, features, adapters: script.adapters, tts, scenes: script.scenes,
+  const tts = digest({ implementation: codeHash(['tts.py']), voice: script.voice, rate: script.rate, scenes: script.scenes.map((s) => ({ id: s.id, speech: s.speech })) });
+  const record = digest({ identity, features, implementation: browserCode, adapters: script.adapters, tts, scenes: script.scenes,
     requests: script.readOnlyRequests, safety: script.safety });
-  const manual = digest({ record, ...documentation });
+  const manual = digest({ record, implementation: manualCode, ...documentation });
   if (bgm && !fs.statSync(bgm).isFile()) throw new Error('背景音乐必须是可读取的音频文件：' + bgm);
   const music = bgm ? { source: fs.realpathSync(bgm), hash: fileHash(bgm) } : null;
-  const compose = digest({ record, watermark: script.watermark, bgm: music });
-  return { identity, check, manual, rehearsalManual: digest({ check, ...documentation }), tts, record, compose };
+  const compose = digest({ record, implementation: codeHash(['compose.py', 'subtitles.py']), watermark: script.watermark, bgm: music });
+  return { identity, check, manual, rehearsalManual: digest({ check, implementation: manualCode, ...documentation }), tts, record, compose };
 }
 
 function artifact(out, rel) {

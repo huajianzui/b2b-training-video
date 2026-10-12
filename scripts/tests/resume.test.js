@@ -86,6 +86,31 @@ test('背景音乐的新增、移除或内容变化不能直接复用原合成�
   assert.equal(replaced.status, 2, replaced.stdout + replaced.stderr); assert.match(replaced.stderr, /compose/);
 });
 
+test('工具实现升级后，不能复用由旧演练、配音、录制或合成代码生成的阶段产物', (t) => {
+  for (const [file, from, stage] of [['play.js', 'tts', 'check'], ['requests.js', 'record', 'check'],
+    ['adapters/native.js', 'record', 'check'], ['tts.py', 'record', 'tts'], ['compose.py', 'cards', 'compose'], ['subtitles.py', 'cards', 'compose']]) {
+    const f = fixture(t); seed(f);
+    fs.appendFileSync(path.join(f.root, file), file.endsWith('.py') ? '\n# regression tool revision\n' : '\n// regression tool revision\n');
+    const r = f.run('demo.yaml', from); assert.equal(r.status, 2, file + '\n' + r.stdout + r.stderr);
+    assert.match(r.stderr, new RegExp('从 ' + stage + ' 环节'), file);
+    seed(f); assert.equal(f.run('demo.yaml', 'cards').status, 0, file + ' 更新阶段来源后应可继续');
+  }
+});
+
+test('手册封面字幕、水印或生成器变化后，不能跳过手册阶段交付旧 Word', (t) => {
+  for (const change of ['subtitle', 'watermark', 'generator']) {
+    const f = fixture(t);
+    if (change === 'subtitle') fs.appendFileSync(f.file, 'intro: {subtitle: 旧封面说明, narration: ""}\n');
+    const p = seed(f);
+    fs.writeFileSync(path.join(f.out, '示例手册.docx'), 'fixture-document'); p.complete('manual', ['示例手册.docx']);
+    if (change === 'generator') fs.appendFileSync(path.join(f.root, 'manual.js'), '\n// regression tool revision\n');
+    else if (change === 'subtitle') fs.writeFileSync(f.file, fs.readFileSync(f.file, 'utf8').replace('旧封面说明', '新封面说明'));
+    else fs.appendFileSync(f.file, 'watermark: 新公司名称\n');
+    const { openPipeline } = require(path.join(f.root, 'pipeline'));
+    assert.throws(() => openPipeline(f.out, loadScript(f.file), 'cards'), /从 manual 环节/, change);
+  }
+});
+
 test('修改 pronounce 后从 tts 开始，输出 JSON 使用当前 YAML 的读音', (t) => {
   const f = fixture(t);
   seed(f);

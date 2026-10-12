@@ -279,7 +279,7 @@ async function runAction(ctx, adapters, a, notes, step) {
       await page.mouse.wheel(0, a.y);
       return String(a.y);
     case 'wait':
-      if (!DRY) await wait(a.ms);
+      await wait(a.ms);
       return a.ms + 'ms';
     default:
       throw new Error('未知动作：' + a.op);
@@ -368,7 +368,7 @@ async function main() {
   const adapters = loadAdapters(script.adapters);
 
   const manifestFile = path.join(OUT, 'tts', 'manifest.json');
-  const durs = {};
+  const durs = Object.create(null);
   if (!DRY) {
     if (!fs.existsSync(manifestFile)) throw new Error('找不到旁白清单 ' + manifestFile + '，先跑 tts.py');
     const m = JSON.parse(fs.readFileSync(manifestFile, 'utf8'));

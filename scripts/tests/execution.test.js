@@ -25,6 +25,12 @@ async function fixture(t, { rehearsal = 'submit', record = 'submit', badExpect =
   fs.mkdirSync(out);
   const state = { writes: 0, rows: new Set(), logins: 0 };
   const backend = http.createServer((req, res) => {
+    if (req.url === '/timed') {
+      res.setHeader('Content-Type', 'text/html; charset=utf-8');
+      res.end(`<!doctype html><meta charset="utf-8"><button id="start" onclick="window.started=performance.now()">开始</button>
+<button id="check" onclick="result.textContent=performance.now()-window.started>=250?'等待已完成':'执行太早'">检查</button><p id="result"></p>`);
+      return;
+    }
     if (req.url === '/save' && req.method === 'POST') {
       state.writes++; state.rows.add('fixture-row'); res.end('保存成功'); return;
     }
@@ -87,6 +93,45 @@ pw.chromium.launch = (options) => launch({ ...options, executablePath: process.e
   const { openPipeline } = require(path.join(root, 'pipeline'));
   return { root, out, file, featureFile, state, base, token, start, wait, decide, status, emptyManifest, loadScript, executionHash, openPipeline };
 }
+
+test('路径型场景 id 在导航与截图前拒绝，不能覆盖工具目录中的其他文件', { timeout: 60000 }, async (t) => {
+  const f = await fixture(t, { rehearsal: 'cancel', record: 'cancel' }); if (!f) return;
+  const source = YAML.parse(fs.readFileSync(f.file, 'utf8'));
+  source.scenes[0].id = '../../../../outside'; fs.writeFileSync(f.file, YAML.stringify(source));
+  const sentinel = path.join(f.root, 'outside-01.png'); fs.writeFileSync(sentinel, 'USER_FILE');
+  const result = await f.start('play.js', ['demo.yaml', '--dry', '--shots']).done;
+  assert.equal(crypto.createHash('sha256').update(fs.readFileSync(sentinel)).digest('hex'),
+    crypto.createHash('sha256').update('USER_FILE').digest('hex'), '目录外的用户文件被截图覆盖');
+  assert.notEqual(result.code, 0, result.log); assert.match(result.log, /id.*路径|id.*文件名/);
+  assert.equal(fs.readFileSync(sentinel, 'utf8'), 'USER_FILE'); assert.equal(f.state.writes, 0);
+  assert.equal(fs.existsSync(path.join(f.out, 'run-report.json')), false);
+});
+
+test('演练遵守显式 wait，延迟依赖与正式录制保持一致', { timeout: 60000 }, async (t) => {
+  const f = await fixture(t, { rehearsal: 'cancel', record: 'cancel' }); if (!f) return;
+  const source = YAML.parse(fs.readFileSync(f.file, 'utf8')); delete source.features; source.url += '/timed';
+  source.scenes = [{ id: 'timed', actions: [{ click: { id: 'start' } }, { wait: 0.35 }, { click: { id: 'check' } }], expect: { text: '等待已完成' } }];
+  fs.writeFileSync(f.file, YAML.stringify(source)); f.emptyManifest();
+  const recorded = await f.start('play.js', ['demo.yaml']).done; assert.equal(recorded.code, 0, recorded.log);
+  const rehearsed = await f.start('play.js', ['demo.yaml', '--dry']).done; assert.equal(rehearsed.code, 0, rehearsed.log);
+  assert.equal(f.state.writes, 0);
+});
+
+test('合法 __proto__ 场景 id 的旁白时长不丢失，录制完整保留配音时间', { timeout: 60000 }, async (t) => {
+  const f = await fixture(t, { rehearsal: 'cancel', record: 'cancel' }); if (!f) return;
+  const source = YAML.parse(fs.readFileSync(f.file, 'utf8')); delete source.features;
+  source.scenes = [{ id: '__proto__', narration: '保留完整旁白。', hold: 0, actions: [] }];
+  fs.writeFileSync(f.file, YAML.stringify(source)); f.emptyManifest();
+  const clip = path.join(f.out, 'tts', 'voice.mp3');
+  const encoded = spawnSync(require('../deps').ffmpegPath(), ['-nostdin', '-y', '-v', 'error', '-f', 'lavfi', '-i', 'anullsrc=r=24000:cl=mono', '-t', '3', clip], { encoding: 'utf8' });
+  assert.equal(encoded.status, 0, encoded.stderr);
+  const script = f.loadScript(f.file);
+  fs.writeFileSync(path.join(f.out, 'tts', 'manifest.json'), JSON.stringify({ voice: script.voice, rate: script.rate,
+    scenes: Object.fromEntries([['__proto__', { speech: script.scenes[0].speech, dur: 3, file: 'output/tts/voice.mp3' }]]) }));
+  const result = await f.start('play.js', ['demo.yaml']).done; assert.equal(result.code, 0, result.log);
+  const session = JSON.parse(fs.readFileSync(path.join(f.out, 'session.json'), 'utf8'));
+  assert.ok(session.scenes[0].end + 0.002 >= session.scenes[0].audioAt + 3.4, JSON.stringify(session));
+});
 
 test('演练和录制两轮提交独立确认，旧确认不能放行新一轮，录制产生真实视频和正式素材', { timeout: 60000 }, async (t) => {
   const f = await fixture(t); if (!f) return;

@@ -1,4 +1,5 @@
 import subprocess
+import re
 import tempfile
 import unittest
 from pathlib import Path
@@ -8,6 +9,37 @@ import intro
 
 
 class VerificationTests(unittest.TestCase):
+    def test_colors_cannot_insert_filter_syntax(self):
+        with tempfile.TemporaryDirectory(prefix="training-card-color-") as temp:
+            root = Path(temp)
+            for key in ("accent", "bg1", "bg2"):
+                values = {"accent": "0x2f7fd0", "bg1": "0x0b1622", "bg2": "0x17324f"}
+                values[key] = "red:t=fill,drawbox=x=0:y=0:w=160:h=160:color=white"
+                with self.subTest(key=key), patch.object(intro, "HERE", root), patch.object(intro, "ff") as ff:
+                    with self.assertRaisesRegex(ValueError, key + ".*颜色"):
+                        intro.build_card_video(1, "标题", "", "", values["accent"], values["bg1"], values["bg2"], "", root / "card.mp4")
+                    ff.assert_not_called()
+            self.assertEqual(list(root.iterdir()), [])
+
+    def test_card_text_is_literal_and_temporary_files_are_cleaned(self):
+        with tempfile.TemporaryDirectory(prefix="training-card-text-") as temp:
+            root = Path(temp)
+            expected = {"title": "采购: O'Reilly 100%{n}", "subtitle": "状态: [完成]\\路径",
+                        "footer": "批次, A; B", "watermark": "公司: 100%"}
+
+            def rendered(args, **kwargs):
+                graph = args[args.index("-vf") + 1]
+                paths = re.findall(r"textfile=([^:]+):expansion=none", graph)
+                self.assertEqual(len(paths), 4)
+                self.assertEqual({Path(p).stem: (root / p).read_text("utf-8") for p in paths}, expected)
+                self.assertNotIn(":text=", graph)
+                return subprocess.CompletedProcess([], 0, "")
+
+            with patch.object(intro, "HERE", root), patch.object(intro, "ff", side_effect=rendered):
+                intro.build_card_video(3, expected["title"], expected["subtitle"], expected["footer"],
+                                       "0x2f7fd0", "0x0b1622", "0x17324f", expected["watermark"], root / "card.mp4")
+            self.assertEqual(list(root.iterdir()), [])
+
     def test_missing_node_is_failure(self):
         with patch.object(intro, "usable", return_value=False):
             self.assertFalse(intro.verify(Path("fixture.mp4")))

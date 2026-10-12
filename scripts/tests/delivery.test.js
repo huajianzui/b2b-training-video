@@ -91,6 +91,29 @@ test('明确不加片头片尾时，同名字幕不偏移且媒体仍通过交�
   const srt = deliveredSrt(f, r); assert.equal(srt.file, '交付回归.srt'); assert.equal(srt.text, bodySrt);
 });
 
+test('标题卡按字面显示含引号、冒号、百分号和反斜线的业务名称', { timeout: 60000 }, (t) => {
+  const f = fixture(t, { intro: { title: "采购: O'Reilly 100%", subtitle: "状态: [已完成]\\路径", footer: "批次, A; B", narration: '', duration: 3,
+    accent: '#2f7fd0', bg1: 'navy', bg2: '0x17324f@0.85' },
+    watermark: "公司: O'Reilly 100%" }); if (!f) return;
+  const r = f.run(); assert.equal(r.status, 0, r.stdout + r.stderr);
+  assert.doesNotMatch(r.stdout + r.stderr, /Stray %|Error when evaluating|No such filter|Error applying/);
+  assert.ok(fs.statSync(f.named).size > 1000);
+  assert.equal(fs.readdirSync(f.root).some((p) => p.startsWith('card-text-')), false);
+  if (process.env.TEST_ARTIFACTS) {
+    fs.mkdirSync(process.env.TEST_ARTIFACTS, { recursive: true });
+    const shot = spawnSync(ffmpegPath(), ['-nostdin', '-y', '-v', 'error', '-ss', '1.8', '-i', f.named, '-frames:v', '1',
+      path.join(process.env.TEST_ARTIFACTS, 'literal-card-1920.png')], { encoding: 'utf8' });
+    assert.equal(shot.status, 0, shot.stderr);
+  }
+});
+
+test('标题卡配色不能注入额外 FFmpeg 滤镜', { timeout: 60000 }, (t) => {
+  const f = fixture(t, { intro: { title: '配色边界', narration: '', duration: 1,
+    accent: 'red:t=fill,drawbox=x=0:y=0:w=160:h=160:color=white' } }); if (!f) return;
+  const r = f.run(); assert.equal(r.status, 2, r.stdout + r.stderr); assert.match(r.stdout + r.stderr, /accent.*颜色/);
+  assert.equal(fs.existsSync(f.named), false);
+});
+
 test('视频标题不能使成品字幕覆盖正片字幕及续跑来源', { timeout: 60000 }, (t) => {
   const f = fixture(t); if (!f) return;
   f.source.title = 'subs'; f.save();

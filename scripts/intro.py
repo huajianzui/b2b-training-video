@@ -48,6 +48,7 @@ import re
 import shutil
 import subprocess
 import sys
+import tempfile
 from pathlib import Path
 from subtitles import shift_srt
 
@@ -138,11 +139,6 @@ def mp4_timing(path):
     return json.loads(r.stdout)
 
 
-def esc(s):
-    """转义 ffmpeg 滤镜表达式里的文本（值用单引号包裹，只需处理 \\ 和 '）"""
-    return s.replace("\\", "\\\\").replace("'", "\\'")
-
-
 def title_size(title):
     """按字数自适应字号，避免长标题溢出画布"""
     n = len(title)
@@ -186,6 +182,25 @@ async def synth_tts(text, out_path, voice, rate, volume, pitch):
 def build_card_video(dur, title, subtitle, footer, accent, bg1, bg2,
                      watermark, out_path):
     """纯滤镜合成标题卡：渐变底 → 品牌条 → 文字（错峰淡入）→ 整体淡入淡出"""
+    for name, color in (("accent", accent), ("bg1", bg1), ("bg2", bg2)):
+        if not isinstance(color, str) or not re.fullmatch(
+            r"(?:[A-Za-z][A-Za-z0-9]*|(?:0x|#)?[0-9A-Fa-f]{6}(?:[0-9A-Fa-f]{2})?)"
+            r"(?:@(?:0x[0-9A-Fa-f]{1,2}|\d+(?:\.\d*)?|\.\d+))?", color
+        ):
+            raise ValueError(name + " 必须是单个颜色值，不能包含滤镜表达式")
+    # textfile 避免业务文字进入多层滤镜解析；临时目录的相对路径没有用户提供的字符。
+    with tempfile.TemporaryDirectory(prefix="card-text-", dir=HERE) as text_dir:
+        _render_card_video(dur, title, subtitle, footer, accent, bg1, bg2,
+                           watermark, out_path, Path(text_dir))
+
+
+def _render_card_video(dur, title, subtitle, footer, accent, bg1, bg2,
+                       watermark, out_path, text_dir):
+    def text_source(key, value):
+        file = text_dir / (key + ".txt")
+        file.write_text(value, encoding="utf-8")
+        return ":textfile=" + file.relative_to(HERE).as_posix() + ":expansion=none"
+
     fs_title = title_size(title)
 
     chain = [
@@ -195,17 +210,17 @@ def build_card_video(dur, title, subtitle, footer, accent, bg1, bg2,
 
     if watermark:
         chain.append(
-            "drawtext=fontfile=" + FONT_REG +
-            ":text='" + esc(watermark) + "'"
-            ":fontsize=26:fontcolor=white@0.22"
+            "drawtext=fontfile=" + FONT_REG
+            + text_source("watermark", watermark)
+            + ":fontsize=26:fontcolor=white@0.22"
             ":x=w-text_w-48:y=h-text_h-46"
         )
 
     # 主标题：0.30s 起淡入
     chain.append(
-        "drawtext=fontfile=" + FONT_BOLD +
-        ":text='" + esc(title) + "'"
-        f":fontsize={fs_title}:fontcolor=white"
+        "drawtext=fontfile=" + FONT_BOLD
+        + text_source("title", title)
+        + f":fontsize={fs_title}:fontcolor=white"
         ":x=(w-text_w)/2:y=418"
         ":alpha='min(1,max(0,(t-0.30)/0.60))'"
     )
@@ -219,18 +234,18 @@ def build_card_video(dur, title, subtitle, footer, accent, bg1, bg2,
 
     if subtitle:
         chain.append(
-            "drawtext=fontfile=" + FONT_REG +
-            ":text='" + esc(subtitle) + "'"
-            ":fontsize=38:fontcolor=0xa8c8e8"
+            "drawtext=fontfile=" + FONT_REG
+            + text_source("subtitle", subtitle)
+            + ":fontsize=38:fontcolor=0xa8c8e8"
             ":x=(w-text_w)/2:y=598"
             ":alpha='min(1,max(0,(t-1.15)/0.60))'"
         )
 
     if footer:
         chain.append(
-            "drawtext=fontfile=" + FONT_REG +
-            ":text='" + esc(footer) + "'"
-            ":fontsize=27:fontcolor=0x7fa2c4"
+            "drawtext=fontfile=" + FONT_REG
+            + text_source("footer", footer)
+            + ":fontsize=27:fontcolor=0x7fa2c4"
             ":x=(w-text_w)/2:y=948"
             ":alpha='min(1,max(0,(t-1.35)/0.60))'"
         )

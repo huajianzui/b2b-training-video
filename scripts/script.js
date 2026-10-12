@@ -58,6 +58,22 @@ const LOCATOR_KEYS = ['testid', 'id', 'role', 'label', 'placeholder', 'text', 'c
 
 class ScriptError extends Error {}
 
+function numeric(value, where, nonnegative = false) {
+  const validType = typeof value === 'number' || typeof value === 'string' && value.trim() !== '';
+  const n = Number(value);
+  if (!validType || !Number.isFinite(n) || nonnegative && n < 0) {
+    throw new ScriptError(where + '：必须是' + (nonnegative ? '非负的' : '') + '有限数值');
+  }
+  return n;
+}
+
+function milliseconds(value, where) {
+  const ms = Math.round(numeric(value, where, true) * 1000);
+  // Node 的 setTimeout 超出有符号 32 位毫秒范围时会缩为 1ms，不能静默缩短用户的等待。
+  if (ms > 2147483647) throw new ScriptError(where + '：超出 Node 计时器的 2147483647ms 范围');
+  return ms;
+}
+
 function absUrl(u, baseDir) {
   if (!u) return '';
   if (/^[a-z]+:\/\//i.test(u)) return u;
@@ -136,9 +152,9 @@ function normActionBody(raw, where, baseUrl) {
     case 'press':
       return { op, key: String(arg) };
     case 'scroll':
-      return { op, y: Number(arg) || 400 };
+      return { op, y: numeric(arg, where + ' scroll') };
     case 'wait':
-      return { op, ms: Math.round(Number(arg) * 1000) || 1000 };
+      return { op, ms: milliseconds(arg, where + ' wait') };
     default:
       throw new ScriptError(where + '：不认识的动作「' + op + '」（可用：goto / click / hover / fill / select / press / scroll / wait / waitFor）');
   }
@@ -312,8 +328,10 @@ function normalize(doc, file, { stage = 'record' } = {}) {
       if (Object.hasOwn(raw, key)) throw new ScriptError(where + '：' + key + ' 是内部字段，不能在场景中填写；提交授权由已确认功能清单和 ending 派生。');
     }
     const id = String(raw.id || 's' + String(i + 1).padStart(2, '0'));
-    if (ids.has(id)) throw new ScriptError(where + '：id「' + id + '」重复');
-    ids.add(id);
+    if (/[\/\\:*?"<>|\u0000-\u001f]/.test(id)) throw new ScriptError(where + '：id 不能包含路径分隔符、控制字符或文件名非法字符');
+    const fileId = id.toLowerCase();
+    if (ids.has(fileId)) throw new ScriptError(where + '：id「' + id + '」忽略大小写后重复，会导致截图文件名冲突');
+    ids.add(fileId);
     if (raw.feature !== undefined) for (const f of [].concat(raw.feature)) covered.add(String(f));
     if (raw.continue) {
       const prev = doc.scenes[i - 1];
@@ -342,7 +360,7 @@ function normalize(doc, file, { stage = 'record' } = {}) {
       narration,
       speech: speech(narration),
       timing,
-      hold: Math.round((s.hold === undefined ? 0.6 : Number(s.hold)) * 1000),
+      hold: milliseconds(s.hold === undefined ? 0.6 : s.hold, where + ' hold'),
       actions,
       expect: normExpect(s.expect, where),
       expectAt: s.expectAt === undefined ? actions.length : s.expectAt,
@@ -420,7 +438,7 @@ function loadScript(file, options) {
 function sceneFeatureIds(file) {
   const YAML = requireFrom('yaml');
   const doc = YAML.parse(fs.readFileSync(file, 'utf8').replace(/^\uFEFF/, '')) || {};
-  const map = {};
+  const map = Object.create(null);
   for (const s of doc.scenes || []) {
     if (!s || s.feature === undefined) continue;
     for (const id of [].concat(s.feature).map(String)) (map[id] = map[id] || []).push(String(s.name || ''));
