@@ -9,9 +9,11 @@
 
 ## 安装
 
-把这个链接发给 Agent，让 Agent 按 [INSTALL.md](INSTALL.md) 帮你安装：
+把这个链接发给 Agent，让 Agent 按 [INSTALL.md](INSTALL.md) 帮你安装（右侧可复制）：
 
+```
 https://github.com/huajianzui/b2b-training-video
+```
 
 也可以自己把仓库克隆到当前 Agent 的个人技能目录（`SKILL.md` 必须直接落在该目录里）：
 
