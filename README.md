@@ -58,6 +58,8 @@ git clone https://github.com/huajianzui/b2b-training-video.git <目录>
 
 在 `scripts/` 中安装依赖后运行 `npm test`。真实浏览器测试设置 `TEST_BROWSER_PATH` 指向 Chrome / Chromium；完整流水线测试还需设置 `PYTHON` 指向已安装 `requirements.txt` 的 Python 3，并安装 Playwright FFmpeg（`npx playwright install ffmpeg`）。缺少这些配置时，测试明确显示跳过；跳过不能当作集成验收通过。
 
-验证范围见 [P1 修复记录](docs/plans/p1-hardening.md) 和 [P2 修复记录](docs/plans/p2-hardening.md)。历史问题见 [P1 复审](docs/reviews/p1-review.md)，当前结果与验收边界见 [P2 复审](docs/reviews/p2-review.md)。
+历史验证范围见 [P1 修复记录](docs/plans/p1-hardening.md) 和 [P2 修复记录](docs/plans/p2-hardening.md)。历史问题与验收边界见 [P1 复审](docs/reviews/p1-review.md) 和 [P2 复审](docs/reviews/p2-review.md)。
 
-继续复审与修复见 [续审计划](docs/plans/follow-up-hardening.md)，最新验证与限制见 [续审报告](docs/reviews/follow-up-review.md)。
+前轮续审与修复见 [续审计划](docs/plans/follow-up-hardening.md) 和 [续审报告](docs/reviews/follow-up-review.md)。
+
+本轮输入、标题渲染与阶段来源修复见 [输入与渲染计划](docs/plans/input-render-hardening.md)，最新验证与升级边界见 [本轮复审报告](docs/reviews/input-render-review.md)。阶段来源已绑定相关工具源码，首次升级后从 check 或完整流程重新生成；显式等待在演练中同样执行，非法 id、数值及配色表达式会报错。
