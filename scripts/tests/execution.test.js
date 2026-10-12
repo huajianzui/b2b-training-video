@@ -227,7 +227,10 @@ test('桌面清单重新确认后，非 TTY 人工登录按钮继续任务且不
   assert.equal(await page.locator('#btnLogin').count(), 1);
   await page.locator('#loginWait').waitFor({ state: 'visible' });
   assert.match(await page.locator('#loginSummary').innerText(), /127.0.0.1.*login-screen/);
-  if (process.env.TEST_ARTIFACTS) await page.screenshot({ path: path.join(process.env.TEST_ARTIFACTS, 'manual-login-1440.png'), fullPage: true });
+  if (process.env.TEST_ARTIFACTS) {
+    fs.mkdirSync(process.env.TEST_ARTIFACTS, { recursive: true });
+    await page.screenshot({ path: path.join(process.env.TEST_ARTIFACTS, 'manual-login-1440.png'), fullPage: true });
+  }
   const stale = await fetch(f.base + '/api/login-confirm', { method: 'POST',
     headers: { 'Content-Type': 'application/json', 'X-Training-Token': f.token, Origin: f.base }, body: JSON.stringify({ runId: login.runId + '-old' }) });
   assert.equal(stale.status, 409);
@@ -303,15 +306,19 @@ test('打开 A 清单时另一个终端运行 B，提交确认明确显示 B 并
   assert.equal(report.confirmation.source, path.join(f.root, 'other.yaml'));
 });
 
-test('真实 produce 流水线两轮确认后完成录制、正式手册与合成，manual 续跑只复用正式素材', { timeout: 60000 }, async (t) => {
+test('真实 produce 流水线两轮确认后完成录制、正式手册、合成和片头片尾，manual 续跑只复用正式素材', { timeout: 60000 }, async (t) => {
   if (!process.env.PYTHON) return t.skip('设置已安装 requirements.txt 的 PYTHON 后运行完整流水线');
   const f = await fixture(t, { narration: '点击新增并填写名称。' }); if (!f) return;
+  const doc = YAML.parse(fs.readFileSync(f.file, 'utf8'));
+  doc.intro = { title: '开始演示', narration: '', duration: 1 };
+  doc.outro = { title: '演示完成', narration: '', duration: 1 };
+  fs.writeFileSync(f.file, YAML.stringify(doc));
   // 预置本地产生的静音音频缓存；真实 tts.py、录制与合成照常执行，不验证微软在线音色。
   const key = crypto.createHash('sha1').update('zh-CN-XiaoxiaoNeural|-6%|点击新增并填写名称。').digest('hex').slice(0, 16);
   fs.mkdirSync(path.join(f.out, 'tts-cache'));
   const audio = spawnSync(require('../deps').ffmpegPath(), ['-y', '-f', 'lavfi', '-i', 'anullsrc=r=24000:cl=mono', '-t', '0.5', path.join(f.out, 'tts-cache', key + '.mp3')], { encoding: 'utf8' });
   assert.equal(audio.status, 0, audio.stderr);
-  const production = f.start('produce.js', ['demo.yaml', '--no-login', '--no-cards']);
+  const production = f.start('produce.js', ['demo.yaml', '--no-login']);
   assert.equal((await f.decide(await f.wait('rehearsal'))).status, 200);
   const second = await f.wait('record'); assert.equal(f.state.writes, 1); f.state.rows.clear();
   assert.equal((await f.decide(second)).status, 200);
@@ -320,6 +327,10 @@ test('真实 produce 流水线两轮确认后完成录制、正式手册与合�
   assert.equal(state.version, 2); for (const stage of ['check', 'tts', 'record', 'manual', 'compose']) assert.ok(state.stages[stage]);
   assert.ok(state.stages.record.artifacts.some((a) => a.file === 'manual/record/steps.json'));
   assert.ok(fs.statSync(path.join(f.out, '写入回归.mp4')).size > 1000);
+  const firstCue = (text) => { const m = /(\d+):(\d+):(\d+),(\d+) -->/.exec(text); assert.ok(m); return +m[1] * 3600 + +m[2] * 60 + +m[3] + +m[4] / 1000; };
+  const bodySrt = fs.readFileSync(path.join(f.out, 'subs.srt'), 'utf8'), finalSrt = fs.readFileSync(path.join(f.out, '写入回归.srt'), 'utf8');
+  assert.ok(Math.abs(firstCue(finalSrt) - firstCue(bodySrt) - 1) < 2 / 25);
+  assert.match(result.log, /元数据与实际解码正常/);
   const p = f.openPipeline(f.out, f.loadScript(f.file), 'manual');
   p.requireStage('record', ['manual/record/steps.json']);
   const manual = await f.start('manual.js', ['demo.yaml']).done; assert.equal(manual.code, 0, manual.log);

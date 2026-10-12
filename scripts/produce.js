@@ -218,12 +218,13 @@ if (Number(process.versions.node.split('.')[0]) < 20) {
   }
 
   const voiced = path.join(OUT, 'demo-voiced.mp4');
-  if (should('verify') && run(tag('verify') + '  校验容器元数据', NODE, [path.join(HERE, 'tools', 'mp4info.js'), voiced]) !== 0) {
-    fail('元数据校验未通过 —— 播放器会跳过音轨，不要交付。');
-  }
-
+  const withCards = should('cards') && !has('no-cards') && (script.intro || script.outro);
+  const verifyMedia = (file) => run(tag('verify') + '  验收媒体（元数据与实际解码）', NODE,
+    [path.join(HERE, 'tools', 'mp4info.js'), file, '--require-audio', '--decode']) === 0;
   let final = voiced;
-  if (should('cards') && !has('no-cards') && (script.intro || script.outro)) {
+  let finalSrt = path.join(OUT, 'subs.srt');
+  if (withCards) {
+    if (!verifyMedia(voiced)) fail('正片媒体校验未通过，不能交付。');
     const cardsFile = path.join(OUT, 'cards.gen.json');
     fs.writeFileSync(cardsFile, JSON.stringify({
       voice: script.voice,
@@ -233,23 +234,32 @@ if (Number(process.versions.node.split('.')[0]) < 20) {
       ...(script.outro ? { outro: script.outro } : {}),
     }, null, 2), 'utf8');
     const out = path.join(OUT, 'demo-final.mp4');
+    finalSrt = path.join(OUT, 'subs-final.srt');
+    fs.rmSync(finalSrt, { force: true });
     const NOT_A_STEP = new Set(['goto', 'wait', 'hover']);
     const steps = script.scenes.reduce((n, s) => n + s.actions.filter((a) => !NOT_A_STEP.has(a.op)).length, 0);
     const narrated = script.scenes.filter((s) => s.narration).length;
     const code = run(tag('cards') + '  片头片尾', PY(), [path.join(HERE, 'intro.py'), '--config', cardsFile,
-      '--attach', voiced, '--out', out, '--steps', String(steps), '--captions', String(narrated)]);
-    if (code === 0) final = out;
-    else console.log('片头片尾失败，正片可用：' + path.relative(HERE, voiced));
+      '--attach', voiced, '--out', out, '--steps', String(steps), '--captions', String(narrated),
+      '--srt-input', path.join(OUT, 'subs.srt'), '--srt-output', finalSrt]);
+    if (code !== 0) fail('片头片尾生成或验收失败，已中止交付。');
+    final = out;
   }
 
+  if (!verifyMedia(final)) fail('最终媒体校验未通过，不能交付。');
+  if (!fs.existsSync(finalSrt)) fail('成品字幕缺失，不能交付。');
   const named = path.join(OUT, script.title.replace(/[\\/:*?"<>|]/g, '_').trim() + '.mp4');
+  const namedSrt = named.replace(/\.mp4$/, '.srt');
+  const protectedNames = new Set(['demo-voiced.mp4', 'demo-final.mp4', 'demo-silent.mp4', 'intro-card.mp4', 'outro-card.mp4', 'subs.srt', 'subs-final.srt']);
+  if ([named, namedSrt].some((f) => protectedNames.has(path.basename(f).toLowerCase()))) fail('标题与内部产物文件名冲突，请更换视频标题后重跑。');
   fs.copyFileSync(final, named);
+  fs.copyFileSync(finalSrt, namedSrt);
   const mb = (fs.statSync(named).size / 1024 / 1024).toFixed(2);
   console.log('\n╔══════════════════════════════════════════════════════╗');
   console.log('║  完成                                                ║');
   console.log('╚══════════════════════════════════════════════════════╝');
   console.log('  成品：' + path.relative(HERE, named) + '（' + mb + ' MB）');
-  console.log('  字幕：output/subs.srt');
+  console.log('  字幕：' + path.relative(HERE, namedSrt));
   if (MANUAL) console.log('  手册：output/' + script.manual.title.replace(/[\\/:*?"<>|]/g, '_').trim() + '.docx');
   console.log('  报告：output/run-report.json');
 })().catch((e) => fail('[致命错误] ' + e.message));

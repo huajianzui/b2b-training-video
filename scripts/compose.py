@@ -22,6 +22,7 @@ import shutil
 import subprocess
 import sys
 from pathlib import Path
+from subtitles import format_ms
 
 HERE = Path(__file__).resolve().parent
 OUT = HERE / "output"
@@ -64,8 +65,7 @@ def split_sentences(text):
 
 
 def ts(sec):
-    ms = int(round(sec * 1000))
-    return f"{ms // 3600000:02d}:{ms // 60000 % 60:02d}:{ms // 1000 % 60:02d},{ms % 1000:03d}"
+    return format_ms(int(round(sec * 1000)))
 
 
 def build_srt(cues):

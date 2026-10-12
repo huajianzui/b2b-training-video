@@ -250,7 +250,7 @@ async function judge(page, cfg) {
 function humanGate(cfg, log) {
   const runId = 'run-' + Date.now().toString(36) + Math.random().toString(36).slice(2, 6);
   const startedAt = Date.now();
-  let hint = '在浏览器里完成登录后，回到终端按一次回车，或在网页界面点「我已登录完成，开始录制」';
+  let hint = '在浏览器里完成登录后，回到终端按一次回车，或在本地确认页点「我已登录完成 · 继续」';
   let needForce = false;
 
   const writeWaitFile = () => {
@@ -571,7 +571,7 @@ async function captureLogin(cfg, log) {
       if (!openedIn) {
         log('  登录成功后，用下面任意一种方式告诉我"可以开始录了"：');
         log('    · 回到这个终端，按一次回车');
-        log('    · 打开网页界面，点【我已登录完成 · 开始录制】');
+        log('    · 打开本地确认页，点【我已登录完成 · 继续】');
         log('  （登录过程不会录进视频，可以放心操作）');
       }
       log('');
