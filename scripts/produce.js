@@ -24,6 +24,7 @@ const path = require('path');
 const { loadScript, asLoginProject, DEFAULT_OUT: SCRIPT_JSON } = require('./script');
 const { ensureLoggedIn } = require('./login');
 const { ffmpegPath } = require('./deps');
+const { STEPS, openPipeline, acquireLock, manualArtifacts } = require('./pipeline');
 
 const HERE = __dirname;
 const OUT = path.join(HERE, 'output');
@@ -75,7 +76,6 @@ const VALUED = new Set(['--from', '--bgm']);
 const scriptArg = argv.find((a, i) => !a.startsWith('--') && !VALUED.has(argv[i - 1]));
 const SCRIPT_FILE = path.resolve(HERE, scriptArg || 'script.yaml');
 
-const STEPS = ['script', 'login', 'check', 'manual', 'tts', 'record', 'compose', 'verify', 'cards'];
 const MANUAL = !has('no-manual');
 const FROM = val('from') || 'script';
 if (!STEPS.includes(FROM)) fail('未知环节：' + FROM + '（可选：' + STEPS.join(' / ') + '）');
@@ -106,7 +106,8 @@ if (Number(process.versions.node.split('.')[0]) < 20) {
 
 (async () => {
   let script;
-  if (should('script')) {
+  // 续跑也必须重新解析指定 YAML；旧 JSON 不能替代确认和脚本校验。
+  {
     console.log('\n==================== ' + tag('script') + '  校验脚本 ====================');
     try {
       script = loadScript(SCRIPT_FILE);
@@ -117,8 +118,6 @@ if (Number(process.versions.node.split('.')[0]) < 20) {
       }
       fail('[脚本错误] ' + e.message);
     }
-    fs.mkdirSync(OUT, { recursive: true });
-    fs.writeFileSync(SCRIPT_JSON, JSON.stringify(script, null, 2), 'utf8');
     console.log(path.relative(HERE, SCRIPT_FILE) + '：' + script.scenes.length + ' 个场景，'
       + script.scenes.reduce((n, s) => n + s.actions.length, 0) + ' 个动作');
     if (script.pronounceHints.length) {
@@ -139,10 +138,12 @@ if (Number(process.versions.node.split('.')[0]) < 20) {
           + dup.map((f) => '    · ' + f.name + '（通用·' + f.shared + '）').join('\n'));
       }
     }
-  } else {
-    if (!fs.existsSync(SCRIPT_JSON)) fail('找不到 ' + path.relative(HERE, SCRIPT_JSON) + '，请从 script 环节开始');
-    script = JSON.parse(fs.readFileSync(SCRIPT_JSON, 'utf8'));
   }
+
+  const release = acquireLock(OUT);
+  process.once('exit', release);
+  const pipeline = openPipeline(OUT, script, FROM, { manual: MANUAL, skipCheck: has('skip-check') });
+  fs.writeFileSync(SCRIPT_JSON, JSON.stringify(script, null, 2), 'utf8');
 
   const env = {};
   if (has('no-login')) {
@@ -150,38 +151,49 @@ if (Number(process.versions.node.split('.')[0]) < 20) {
   } else if (should('login')) {
     console.log('\n==================== ' + tag('login') + '  准备登录态（录制前完成，不会录进视频） ====================');
     try {
-      const r = await ensureLoggedIn(asLoginProject(script), { force: has('relogin') });
+      const r = await ensureLoggedIn(asLoginProject(script), { force: has('relogin') || pipeline.authChanged });
       console.log(r.enabled ? '登录态就绪：' + path.relative(HERE, r.storagePath) : '本脚本不需要登录');
     } catch (e) {
       fail('登录没有完成，已中止：' + e.message);
     }
     env.REC_TRUST_AUTH = '1';
   }
+  if (!should('login') && (has('relogin') || pipeline.authChanged)) env.REC_RELOGIN = '1';
 
   if (should('check') && !has('skip-check')) {
     const args = [path.join(HERE, 'play.js'), '--dry'];
     if (MANUAL) args.push('--shots');
     const code = run(tag('check') + '  演练（不录像，验证每一步与断言' + (MANUAL ? '，顺带截取手册配图' : '') + '）', NODE, args, env);
     if (code !== 0) fail('演练未通过，已中止 —— 现场截图与页面结构见 output/run-report.json');
+    fs.copyFileSync(path.join(OUT, 'run-report.json'), path.join(OUT, 'check-report.json'));
+    pipeline.complete('check', ['check-report.json', ...(MANUAL ? manualArtifacts(OUT) : [])]);
   }
 
   if (should('manual') && MANUAL) {
+    pipeline.requireStage('check', ['manual/steps.json']);
     if (run(tag('manual') + '  生成操作手册（Word）', NODE, [path.join(HERE, 'manual.js')]) !== 0) fail('手册生成失败。');
+    pipeline.complete('manual', [script.manual.title.replace(/[\\/:*?"<>|]/g, '_').trim() + '.docx']);
   }
 
   if (has('dry')) {
-    console.log('\n（--dry：到此为止，手册已生成。去掉 --dry 正式出片。）');
+    console.log('\n（--dry：到此为止' + (MANUAL && should('manual') ? '，手册已生成' : '') + '。去掉 --dry 正式出片。）');
     process.exit(0);
   }
 
   if (should('tts') && run(tag('tts') + '  合成旁白（先于录制，决定每个场景的时长）', PY(), [path.join(HERE, 'tts.py')]) !== 0) {
     fail('旁白合成失败。');
   }
+  if (should('tts')) {
+    const manifest = JSON.parse(fs.readFileSync(path.join(OUT, 'tts', 'manifest.json'), 'utf8'));
+    const clips = Object.values(manifest.scenes).map((m) => path.relative(OUT, path.resolve(HERE, m.file)));
+    pipeline.complete('tts', ['tts/manifest.json', ...clips]);
+  }
 
   if (should('record')) {
     const args = [path.join(HERE, 'play.js')];
     if (has('headed')) args.push('--headed');
     if (run(tag('record') + '  按旁白节奏录制', NODE, args, env) !== 0) fail('录制失败，详情见 output/run-report.json');
+    pipeline.complete('record', ['raw.webm', 'session.json', 'run-report.json']);
   }
 
   if (should('compose') || should('cards')) ensureFonts();
@@ -189,6 +201,7 @@ if (Number(process.versions.node.split('.')[0]) < 20) {
     const args = [path.join(HERE, 'compose.py')];
     if (val('bgm')) args.push('--bgm', path.resolve(HERE, val('bgm')));
     if (run(tag('compose') + '  后期：烧录字幕 + 旁白音轨', PY(), args) !== 0) fail('后期合成失败。');
+    pipeline.complete('compose', ['demo-voiced.mp4', 'subs.srt']);
   }
 
   const voiced = path.join(OUT, 'demo-voiced.mp4');
