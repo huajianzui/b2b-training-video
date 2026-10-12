@@ -50,6 +50,8 @@ git clone https://github.com/huajianzui/b2b-training-video.git <目录>
 
 重新盘点时，同 ID 的业务说明、权限、前提或页面信息变化也会撤销旧确认，保留用户选择并提示重新确认。人工登录完成后，在本地确认页点击“我已登录完成 · 继续”；登录确认之后，真实提交仍需本轮数据确认。
 
+项目内工具包使用 `node <Skill目录>/scripts/install-runtime.js <项目>/.training-video` 安装或更新，保留已有演示脚本和产物。`produce.js --help` 只显示帮助，非法参数执行前报错。背景音乐纳入合成来源校验，音乐增删或内容变化应从 compose 重跑；旧合成来源记录也需重跑 compose。
+
 交付前校验必要的音视频轨道并实际解码。片头片尾生成、验收或依赖失败都会中止；从 `cards` 续跑也执行成品验收。`output/subs.srt` 保留正片时间轴，交付使用 `output/<标题>.srt`，重跑不会累计片头偏移。
 
 覆盖升级即使保留旧 `app/index.html` 和 `build.js`，首页也只进入当前确认页，旧生成 API 返回迁移提示。提交确认会显示实际执行的脚本、环境和功能；当前打开的清单与该脚本不同会明确提示。
@@ -57,3 +59,5 @@ git clone https://github.com/huajianzui/b2b-training-video.git <目录>
 在 `scripts/` 中安装依赖后运行 `npm test`。真实浏览器测试设置 `TEST_BROWSER_PATH` 指向 Chrome / Chromium；完整流水线测试还需设置 `PYTHON` 指向已安装 `requirements.txt` 的 Python 3，并安装 Playwright FFmpeg（`npx playwright install ffmpeg`）。缺少这些配置时，测试明确显示跳过；跳过不能当作集成验收通过。
 
 验证范围见 [P1 修复记录](docs/plans/p1-hardening.md) 和 [P2 修复记录](docs/plans/p2-hardening.md)。历史问题见 [P1 复审](docs/reviews/p1-review.md)，当前结果与验收边界见 [P2 复审](docs/reviews/p2-review.md)。
+
+继续复审与修复见 [续审计划](docs/plans/follow-up-hardening.md)，最新验证与限制见 [续审报告](docs/reviews/follow-up-review.md)。

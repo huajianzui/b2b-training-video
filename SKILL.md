@@ -31,8 +31,7 @@ description: 为工作区里的 B 端业务系统（尤其 Vue3 + Element Plus�
 工具包在本 Skill 的 `scripts/`。复制到工作区的 `.training-video/`（以下称**工具目录**，所有命令都在这里执行），并把 `.training-video/` 加进 `.gitignore`。
 
 ```powershell
-New-Item -ItemType Directory -Force <工作区>/.training-video | Out-Null
-Copy-Item -Recurse -Force <本Skill目录>/scripts/* <工作区>/.training-video   # 已存在时覆盖为最新脚本，保留你的脚本、清单和 output/
+node <本Skill目录>/scripts/install-runtime.js <工作区>/.training-video
 cd <工作区>/.training-video
 npm install
 npx playwright install chromium
@@ -43,6 +42,7 @@ py -3 -m pip install -r requirements.txt        # 非 Windows 用 python3 -m pip
 - **Python 必须是 3.x 且装了 edge-tts**（有的机器上 `python` 是 2.x）。`produce.js` 依次试 `PYTHON` 环境变量、`py -3`、`python3`、`python`，用第一个装了 edge-tts 的 3.x；找到 3.x 但没装依赖时会给出安装命令。
 - **字体**：字幕和片头片尾用 `assets/msyh.ttc`、`assets/msyhbd.ttc`。Windows 上出片时自动从系统字体目录复制；其他系统把任一中文字体（如 Noto Sans CJK）复制到 `assets/` 并改成这两个文件名。
 - ffmpeg 自动用 npm 装的 `ffmpeg-static`；也可用环境变量 `FFMPEG` 指定。
+- 升级只更新工具代码，保留已有 YAML、output、node_modules 和 assets；示例仅在不存在时初始化。非工具目录、执行锁或目标子目录符号链接会明确拒绝，先核对再处理。不要使用整目录强制复制覆盖用户的 script.yaml。
 
 ### 2. 把系统跑起来
 
@@ -57,7 +57,7 @@ py -3 -m pip install -r requirements.txt        # 非 Windows 用 python3 -m pip
      testData: true         # 用户明确允许写测试数据；每轮提交前仍须确认本轮数据准备
    ```
 4. 核对登录和查询代码，把认证 POST、POST 查询等确定不修改业务数据的接口写入脚本 `readOnlyRequests: [{method, url}]`。写功能的真实接口写入清单 `writeRequests`，含方法、来源、路径；动态路径只允许完整的 `{id}` 段。不要把查询与修改共用的 GraphQL / RPC 地址整体标为只读。WebSocket 只支持核对为只读的连接，写通道不开放。配置冲突会明确报错。
-5. 确认能登录，记下：前端地址、登录地址、账号、登录成功后的地址、登录表单三个控件的选择器。账号密码通过环境变量提供。各工具都支持 `--help`。页面发生 HTTP 重定向时，按错误提示配置最终页面地址；API 重定向逐跳检查授权。
+5. 确认能登录，记下：前端地址、登录地址、账号、登录成功后的地址、登录表单三个控件的选择器。账号密码通过环境变量提供。`node produce.js --help` 查看流水线选项，单项工具用法见对应脚本顶部。页面发生 HTTP 重定向时，按错误提示配置最终页面地址；API 重定向逐跳检查授权。
 
 ### 3. 盘点功能清单
 
@@ -113,6 +113,8 @@ node produce.js <脚本>
 成品验收要求有效的容器、视频轨和音频轨，并实际解码媒体；片头片尾或校验失败均中止交付，缺校验依赖也不能跳过。`--from cards` 同样执行验收。单独诊断可运行 `node tools/mp4info.js <文件.mp4> --require-audio --decode`；不加 `--decode` 只检查元数据。`intro.py --no-verify` 生成的文件属于待校验产物，不能宣称已经验收。
 
 中途失败可续跑：`--from tts / record / manual / compose / cards`。每次都会重新校验指定 YAML、清单和所需产物的来源。更换脚本、环境或角色不能沿用旧产物；改变旁白先从 tts 开始，改变操作先从 check 开始。重新执行 submit 阶段仍需新确认。提交后断言、截图或录制失败时，报告会列出已发出的请求及响应状态；数据可能已经改变，先请用户核对数据再重跑，不自动回滚。
+
+使用 `--bgm <文件>` 时，续跑保留同一选项；音乐的增删、路径或内容变化从 compose 重跑。旧合成记录缺少音乐来源，会明确要求重跑 compose，不需要因此重录。`--help` 只显示用法；未知选项和缺参数在执行前报错。无旁白场景仍可合成，产生静音音轨及空 SRT；空 SRT 不交给字幕滤镜。
 
 手册素材分为 `output/manual/rehearsal/` 和 `output/manual/record/`。演练手册为 `<标题>（演练）.docx`，正式手册来自正式录制。直接调用也使用 YAML：`node play.js <脚本> --shots`、`node manual.js <脚本>`；演练手册用 `node manual.js <脚本> --rehearsal`。
 
