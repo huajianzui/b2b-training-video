@@ -69,6 +69,8 @@ features:
 
 不要写 include / writeMode / rehearsalMode / status（用户确认时回写）。不要自行填写 environment.testData，主 Agent 需先取得用户的环境选择。可以用 # 注释按页面分组。
 
+系统改版后保留相同功能的稳定 ID，如实更新业务说明、权限、资格、前提和页面信息；不要为保留旧确认而沿用过期字段。主 Agent 用 `features.js merge` 合并后，新增、消失和同 ID 信息变化都需用户重新确认，已有环境和两轮收尾选择会保留。
+
 ## 完成后返回
 
 1. 文件路径

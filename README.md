@@ -4,6 +4,7 @@
 
 - 带配音、字幕、片头片尾的 mp4
 - 带步骤截图的 Word 操作手册
+- 与成品视频同名、对齐片头时间轴的 SRT 字幕
 
 适用于 Cursor、Claude Code、Codex 等能加载本地 Skill 的 Agent。`scripts/script.yaml` 是虚构的订单管理格式示例，只看写法。
 
@@ -47,8 +48,12 @@ git clone https://github.com/huajianzui/b2b-training-video.git <目录>
 
 正式手册使用正式录制素材，演练手册独立命名为 `<标题>（演练）.docx`。续跑始终重新校验 YAML 与产物来源。输出共用同一把锁；不要同时运行多个脚本。
 
+重新盘点时，同 ID 的业务说明、权限、前提或页面信息变化也会撤销旧确认，保留用户选择并提示重新确认。人工登录完成后，在本地确认页点击“我已登录完成 · 继续”；登录确认之后，真实提交仍需本轮数据确认。
+
+交付前校验必要的音视频轨道并实际解码。片头片尾生成、验收或依赖失败都会中止；从 `cards` 续跑也执行成品验收。`output/subs.srt` 保留正片时间轴，交付使用 `output/<标题>.srt`，重跑不会累计片头偏移。
+
 覆盖升级即使保留旧 `app/index.html` 和 `build.js`，首页也只进入当前确认页，旧生成 API 返回迁移提示。提交确认会显示实际执行的脚本、环境和功能；当前打开的清单与该脚本不同会明确提示。
 
 在 `scripts/` 中安装依赖后运行 `npm test`。真实浏览器测试设置 `TEST_BROWSER_PATH` 指向 Chrome / Chromium；完整流水线测试还需设置 `PYTHON` 指向已安装 `requirements.txt` 的 Python 3，并安装 Playwright FFmpeg（`npx playwright install ffmpeg`）。缺少这些配置时，测试明确显示跳过；跳过不能当作集成验收通过。
 
-验证范围见 [P1 修复记录](docs/plans/p1-hardening.md)，剩余问题与验收边界见 [修后复审](docs/reviews/p1-review.md)。
+验证范围见 [P1 修复记录](docs/plans/p1-hardening.md) 和 [P2 修复记录](docs/plans/p2-hardening.md)。历史问题见 [P1 复审](docs/reviews/p1-review.md)，当前结果与验收边界见 [P2 复审](docs/reviews/p2-review.md)。
