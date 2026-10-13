@@ -43,6 +43,7 @@ py -3 -m pip install -r requirements.txt        # 非 Windows 用 python3 -m pip
 - **字体**：字幕和片头片尾用 `assets/msyh.ttc`、`assets/msyhbd.ttc`。Windows 上出片时自动从系统字体目录复制；其他系统把任一中文字体（如 Noto Sans CJK）复制到 `assets/` 并改成这两个文件名。
 - ffmpeg 自动用 npm 装的 `ffmpeg-static`；也可用环境变量 `FFMPEG` 指定。
 - 升级只更新工具代码，保留已有 YAML、output、node_modules 和 assets；示例仅在不存在时初始化。非工具目录、执行锁或目标子目录符号链接会明确拒绝，先核对再处理。不要使用整目录强制复制覆盖用户的 script.yaml。
+- 包内包括 `tools/`、`demo/demo.html` 和 `examples/authenticated.yaml`。默认 `script.yaml` 可在本地页面上演练工具；真实系统的登录、POST 查询及读音规则参照 `examples/authenticated.yaml`，先替换其中所有占位 URL、选择器和接口。升级保留旧 YAML，旧 `examples/script.yaml` 引用本地示例时将 URL 改为 `../demo/demo.html`。
 
 ### 2. 把系统跑起来
 
@@ -57,7 +58,7 @@ py -3 -m pip install -r requirements.txt        # 非 Windows 用 python3 -m pip
      testData: true         # 用户明确允许写测试数据；每轮提交前仍须确认本轮数据准备
    ```
 4. 核对登录和查询代码，把认证 POST、POST 查询等确定不修改业务数据的接口写入脚本 `readOnlyRequests: [{method, url}]`。写功能的真实接口写入清单 `writeRequests`，含方法、来源、路径；动态路径只允许完整的 `{id}` 段。不要把查询与修改共用的 GraphQL / RPC 地址整体标为只读。WebSocket 只支持核对为只读的连接，写通道不开放。配置冲突会明确报错。
-5. 确认能登录，记下：前端地址、登录地址、账号、登录成功后的地址、登录表单三个控件的选择器。账号密码通过环境变量提供。`node produce.js --help` 查看流水线选项，单项工具用法见对应脚本顶部。页面发生 HTTP 重定向时，按错误提示配置最终页面地址；API 重定向逐跳检查授权。
+5. 确认能登录，记下：前端地址、登录地址、账号、登录成功后的地址、登录表单三个控件的选择器。账号密码通过环境变量提供。`node produce.js --help` 查看流水线选项；play、manual、features、login 同样支持 `--help / -h`，帮助和错误参数不会执行任务。单项登录为 `node login.js <脚本.yaml>`，`--check / --force / --clear` 分别验证、重新登录、删除该脚本的登录态；不能混用。显式 `--project <旧.json>` 仅用于迁移兼容。页面发生 HTTP 重定向时，按错误提示配置最终页面地址；API 重定向逐跳检查授权。
 
 ### 3. 盘点功能清单
 
@@ -87,9 +88,9 @@ py -3 -m pip install -r requirements.txt        # 非 Windows 用 python3 -m pip
 
 ### 5. 写演示脚本
 
-脚本格式见 `script.js` 开头注释，通用示例 `script.yaml`（虚构的订单管理，只看写法，不要照抄到对方系统上）。
+脚本格式见 `script.js` 开头注释。本地可运行示例 `script.yaml` 使用虚构订单页面；页面没有后端，不保存业务数据，导出仅显示示例提示。真实系统配置写法见 `examples/authenticated.yaml`，必须核对并替换所有占位内容，不要原样用于对方系统。
 
-1. 写脚本头：`title / url / adapters / features / login / intro / outro / manual / pronounce`。登录段参照实例（`mode: auto`，`reuse: false`，`storage: output/auth.json`）。
+1. 写脚本头：`title / url / adapters / features / login / intro / outro / manual / pronounce`。登录段、`readOnlyRequests` 和 `pronounce` 参照 `examples/authenticated.yaml`（`mode: auto`，`reuse: false`，`storage: output/auth.json`）；接口只有核对为只读后才可放行。
 2. 按页面分批写场景，规则见 `scripts/prompts/scene-writer.md`。每批写完：
    `node script.js <脚本>` → `node play.js <脚本> --dry --scenes <本批范围>` → 失败就看报告、修、重跑。范围命中接续场景时会扩展到完整组，包含对应的取消或提交收尾。
    **开始写场景之前**先拿登录态：脚本头写好、`scenes:` 下先放一个只 `goto` 首页的占位场景，跑 `node produce.js <脚本> --dry --allow-uncovered`。它会自动登录并把登录态存到 `login.storage`，之后 `snap.js` 用这个文件。写好第一批场景后删掉占位场景。
@@ -113,6 +114,8 @@ node produce.js <脚本>
 
 成品验收要求有效的容器、视频轨和音频轨，并实际解码媒体；片头片尾或校验失败均中止交付，缺校验依赖也不能跳过。`--from cards` 同样执行验收。单独诊断可运行 `node tools/mp4info.js <文件.mp4> --require-audio --decode`；不加 `--decode` 只检查元数据。`intro.py --no-verify` 生成的文件属于待校验产物，不能宣称已经验收。
 
+录制文件必须覆盖全部场景、旁白及留白；时长过短会报错，不会把场景时间截成零后继续合成。先核对浏览器与录制环境；若本轮已经提交业务请求，仍先由用户核对数据，再重新确认并录制。
+
 中途失败可续跑：`--from tts / record / manual / compose / cards`。每次都会重新校验指定 YAML、清单和所需产物的来源。更换脚本、环境或角色不能沿用旧产物；改变旁白先从 tts 开始，改变操作先从 check 开始。重新执行 submit 阶段仍需新确认。提交后断言、截图或录制失败时，报告会列出已发出的请求及响应状态；数据可能已经改变，先请用户核对数据再重跑，不自动回滚。
 
 使用 `--bgm <文件>` 时，续跑保留同一选项；音乐的增删、路径或内容变化从 compose 重跑。旧合成记录缺少音乐来源，会明确要求重跑 compose，不需要因此重录。`--help` 只显示用法；未知选项和缺参数在执行前报错。无旁白场景仍可合成，产生静音音轨及空 SRT；空 SRT 不交给字幕滤镜。
@@ -125,7 +128,7 @@ node produce.js <脚本>
 
 ### 7. 读音检查 → 交付
 
-- edge-tts 不支持发音标注，多音字可能读错。校验脚本时会列出「含易错多音字、待抽听的词」。表格类模块一开始就加 `行 → 航` 规则（见实例的 `pronounce`）。
+- edge-tts 不支持发音标注，多音字可能读错。校验脚本时会列出「含易错多音字、待抽听的词」。表格类模块一开始就加 `行 → 航` 规则（见 `examples/authenticated.yaml` 的 `pronounce`，按实际词语核对例外）。
 - 请用户抽听列出的位置：读错的加进 `pronounce`（只改配音，不改字幕），读对的加进 `pronounceChecked`；然后 `--from tts` 重出。
 - `pronounceChecked` **只写人真的听过的词**，不要从实例复制、不要凭感觉加；已在默认音色下确认过的常见词内置在 `script.js` 的 `BUILTIN_CHECKED`，不用重复写。
 - 交付：mp4、docx、srt 的路径；场景数和视频时长；发现的系统问题；没演示的功能及原因。

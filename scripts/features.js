@@ -44,6 +44,18 @@
  *   node features.js merge <已确认清单> <新盘点清单>   对比后写回已确认清单：新增的标 new，消失的标 removed
  */
 
+const CLI = require.main === module ? require('./cli').readCli({
+  usage: '用法：node features.js <清单.features.yaml> [--yes]\n'
+    + '      node features.js merge <已确认清单> <新清单>\n'
+    + '  --yes 仅记录用户已经明确批准的选择。',
+  options: { yes: { type: 'boolean' } }, maxPositionals: 3,
+  validate: ({ values, positionals }) => {
+    if (positionals[0] === 'merge') {
+      if (positionals.length !== 3 || values.yes) throw new Error('merge 需要两份清单且不能使用 --yes。');
+    } else if (positionals.length !== 1) throw new Error('只能指定一份功能清单；使用 --help 查看用法。');
+  }
+}) : null;
+
 const fs = require('fs');
 const path = require('path');
 const { requireFrom } = require('./deps');
@@ -247,8 +259,7 @@ function mergeFresh(savedFile, freshFile) {
 module.exports = { loadFeatures, saveDecisions, validateDecisions, mergeFresh, FeatureError, WRITE_MODES };
 
 if (require.main === module) {
-  const argv = process.argv.slice(2);
-  const [cmd, a, b] = argv.filter((x) => !x.startsWith('--'));
+  const [cmd, a, b] = CLI.positionals;
   try {
     if (cmd === 'merge') {
       if (!a || !b) throw new FeatureError('用法：node features.js merge <已确认清单> <新盘点清单>');
@@ -264,7 +275,7 @@ if (require.main === module) {
     } else {
       if (!cmd) throw new FeatureError('用法：node features.js <清单> [--yes]');
       const file = path.resolve(cmd);
-      const f = argv.includes('--yes') ? saveDecisions(file, {}, true) : loadFeatures(file);
+      const f = CLI.values.yes ? saveDecisions(file, {}, true) : loadFeatures(file);
       const on = f.features.filter((x) => x.include);
       console.log(f.module + '：' + f.pages.length + ' 个页面，' + f.features.length + ' 个功能，勾选 ' + on.length + ' 个'
         + '（写数据 ' + on.filter((x) => x.kind === 'write').length + '）');

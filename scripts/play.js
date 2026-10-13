@@ -16,6 +16,14 @@
  *   node play.js --dry --scenes 9-20   只演练第 9～20 个场景（也可写 12 或 9-），调脚本时用；正式录制不支持
  */
 
+const CLI = require('./cli').readCli({
+  usage: '用法：node play.js [脚本.yaml] [--dry] [--shots] [--headed]\n'
+    + '  --dry --scenes <9-20|9-|12>  只演练完整场景组，不截图\n'
+    + '  未指定 YAML 时仅使用缓存 JSON 记录的 YAML 来源；submit 仍需本轮用户确认。',
+  options: { dry: { type: 'boolean' }, shots: { type: 'boolean' }, headed: { type: 'boolean' }, scenes: { type: 'string' } },
+  validate: ({ values }) => sceneRange(values)
+});
+
 const fs = require('fs');
 const path = require('path');
 const { requireFrom } = require('./deps');
@@ -30,21 +38,23 @@ const { chromium } = requireFrom('playwright');
 
 const HERE = __dirname;
 const OUT = path.join(HERE, 'output');
-const DRY = process.argv.includes('--dry');
-const HEADED = process.argv.includes('--headed');
-const SHOTS = process.argv.includes('--shots');
+const DRY = !!CLI.values.dry;
+const HEADED = !!CLI.values.headed;
+const SHOTS = !!CLI.values.shots;
 const STAGE = DRY ? 'rehearsal' : 'record';
 const MATERIAL_DIR = path.join(OUT, 'manual', STAGE);
 const SHOT_DIR = path.join(MATERIAL_DIR, 'shots');
 
-function sceneRange() {
-  const i = process.argv.indexOf('--scenes');
-  if (i < 0) return null;
-  const m = /^(\d+)(-(\d*))?$/.exec(process.argv[i + 1] || '');
+function sceneRange(values = CLI.values) {
+  if (values.scenes === undefined) return null;
+  const m = /^(\d+)(-(\d*))?$/.exec(values.scenes);
   if (!m) throw new Error('--scenes 写成 9-20、9- 或 12');
-  if (!DRY || SHOTS) throw new Error('--scenes 只能用于不截图的演练（--dry）');
+  if (!values.dry || values.shots) throw new Error('--scenes 只能用于不截图的演练（--dry）');
   const from = Number(m[1]);
   const to = m[2] ? (m[3] ? Number(m[3]) : Infinity) : from;
+  if (!Number.isSafeInteger(from) || from < 1 || (to !== Infinity && (!Number.isSafeInteger(to) || to < from))) {
+    throw new Error('--scenes 从 1 开始，范围终点不能小于起点。');
+  }
   return (n) => n >= from && n <= to;
 }
 
@@ -348,8 +358,7 @@ async function captureFailure(page, scene) {
 // ---------------------------------------------------------------- 主流程
 
 async function main() {
-  const argv = process.argv.slice(2);
-  const source = argv.find((a, i) => !a.startsWith('--') && argv[i - 1] !== '--scenes')
+  const source = CLI.positionals[0]
     || (fs.existsSync(SCRIPT_JSON) && JSON.parse(fs.readFileSync(SCRIPT_JSON, 'utf8')).source);
   if (!source) throw new Error('缺少 YAML 来源；旧 JSON 不能作为执行输入，请运行 node play.js <脚本.yaml>。');
   const script = loadScript(path.resolve(HERE, source), { stage: STAGE });
@@ -503,10 +512,18 @@ async function main() {
       fs.copyFileSync(await video.path(), raw);
       fs.rmSync(videoDir, { recursive: true, force: true });
       const videoDur = probeDuration(raw);
-      if (videoDur === null) throw new Error('读不到视频时长：' + raw);
+      if (!Number.isFinite(videoDur) || videoDur <= 0) throw new Error('读不到有效视频时长：' + raw);
       const delta = stopAt - videoDur;
-      const shift = (t) => Math.max(0, Math.round((t - delta) * 1000) / 1000);
-      for (const s of session.scenes) { s.start = shift(s.start); s.audioAt = shift(s.audioAt); s.end = shift(s.end); }
+      const shift = (t) => Math.round((t - delta) * 1000) / 1000;
+      for (const s of session.scenes) {
+        // 录制器缺帧时可能只交付一秒占位视频；不能截成零时间并假报完成。
+        if (s.start - delta < 0) throw new Error('录制视频未覆盖场景 ' + s.id + '，请核对录制环境后重录。');
+        s.start = shift(s.start); s.audioAt = shift(s.audioAt); s.end = shift(s.end);
+        // 各时间保留三位小数，比较允许两次取整合计的 2ms 误差。
+        if (s.end + 0.002 < s.audioAt + ((durs[s.id] || 0) + CFG.tail) / 1000) {
+          throw new Error('录制视频未覆盖场景 ' + s.id + ' 的完整旁白与留白，请重录。');
+        }
+      }
       session.duration = videoDur; session.video = path.relative(HERE, raw);
       fs.writeFileSync(path.join(OUT, 'session.json'), JSON.stringify(session, null, 2), 'utf8');
       console.log('\n[完成] ' + session.video + '  时长 ' + videoDur.toFixed(1) + 's');

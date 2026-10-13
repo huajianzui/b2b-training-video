@@ -1,0 +1,42 @@
+# 真实系统的配置写法示例，不可原样执行。
+# 必须核对并替换 URL、选择器和只读接口；账号口令仅通过环境变量提供。
+# 不在这个文件里批准业务提交；写功能还需已确认清单、两轮选择及逐轮数据确认。
+title: 登录与查询配置示例
+url: https://replace-with-your-test-system.invalid/orders
+adapters: [element-plus]
+voice: zh-CN-XiaoxiaoNeural
+rate: -6%
+
+login:
+  enabled: true
+  mode: auto
+  start: auto
+  reuse: false
+  storage: output/auth.json
+  url: https://replace-with-your-test-system.invalid/login
+  username: ${TRAINING_DEMO_USER}
+  password: ${TRAINING_DEMO_PASSWORD}
+  usernameSelector: '#username'
+  passwordSelector: '#password'
+  submitSelector: 'button[type="submit"]'
+  successSelector: '#current-user'
+
+# 仅在读代码确认没有业务写入后，替换为实际方法和路径；不能整体放行共用 RPC 地址。
+readOnlyRequests:
+  - method: POST
+    url: /api/auth/login
+  - method: POST
+    url: /api/orders/search
+
+# 只修改配音文字，字幕保持原词；pronounceChecked 仅填写用户实际抽听过的词。
+pronounce:
+  行: {say: 航, except: [银行, 行为]}
+
+scenes:
+  - id: list
+    name: 查看列表
+    narration: 表格每一行展示一条记录，查询条件按实际页面填写。
+    actions:
+      - goto: /orders
+    expect:
+      - visible: {css: '#orders-table'}

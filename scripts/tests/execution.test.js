@@ -20,11 +20,12 @@ async function fixture(t, { rehearsal = 'submit', record = 'submit', badExpect =
   if (!process.env.TEST_BROWSER_PATH) { t.skip('设置 TEST_BROWSER_PATH 后验证真实演练与录制'); return null; }
   const temp = fs.mkdtempSync(path.join(os.tmpdir(), 'training-execution-'));
   const root = path.join(temp, 'runtime'), out = path.join(root, 'output');
-  fs.cpSync(scripts, root, { recursive: true, filter: (f) => !['node_modules', 'tests', 'output', 'assets'].includes(path.basename(f)) });
+  fs.cpSync(scripts, root, { recursive: true, filter: (f) => !['node_modules', 'tests', 'output'].includes(path.basename(f)) });
   fs.symlinkSync(path.join(scripts, 'node_modules'), path.join(root, 'node_modules'), 'junction');
   fs.mkdirSync(out);
-  const state = { writes: 0, rows: new Set(), logins: 0 };
+  const state = { writes: 0, rows: new Set(), logins: 0, visits: 0 };
   const backend = http.createServer((req, res) => {
+    state.visits++;
     if (req.url === '/timed') {
       res.setHeader('Content-Type', 'text/html; charset=utf-8');
       res.end(`<!doctype html><meta charset="utf-8"><button id="start" onclick="window.started=performance.now()">开始</button>
@@ -94,6 +95,18 @@ pw.chromium.launch = (options) => launch({ ...options, executablePath: process.e
   return { root, out, file, featureFile, state, base, token, start, wait, decide, status, emptyManifest, loadScript, executionHash, openPipeline };
 }
 
+test('已有有效 YAML、JSON 和 TTS 缓存时，play 帮助及拼错的演练参数仍不启动浏览器或操作页面', { timeout: 60000 }, async (t) => {
+  const f = await fixture(t, { rehearsal: 'cancel', record: 'cancel' }); if (!f) return;
+  f.emptyManifest();
+  const json = path.join(f.out, 'script.json'), cached = JSON.stringify({ source: f.file }); fs.writeFileSync(json, cached);
+  for (const [args, expected] of [[['--help'], 0], [['--dry', '--help'], 0], [['--dray'], 2]]) {
+    const r = await f.start('play.js', args).done; assert.equal(r.code, expected, r.log);
+    assert.equal(f.state.visits, 0, r.log); assert.equal(f.state.writes, 0, r.log);
+    assert.equal(fs.readFileSync(json, 'utf8'), cached);
+    for (const file of ['run-report.json', 'raw.webm', 'session.json', '.produce.lock']) assert.equal(fs.existsSync(path.join(f.out, file)), false, file);
+  }
+});
+
 test('路径型场景 id 在导航与截图前拒绝，不能覆盖工具目录中的其他文件', { timeout: 60000 }, async (t) => {
   const f = await fixture(t, { rehearsal: 'cancel', record: 'cancel' }); if (!f) return;
   const source = YAML.parse(fs.readFileSync(f.file, 'utf8'));
@@ -130,7 +143,47 @@ test('合法 __proto__ 场景 id 的旁白时长不丢失，录制完整保留�
     scenes: Object.fromEntries([['__proto__', { speech: script.scenes[0].speech, dur: 3, file: 'output/tts/voice.mp3' }]]) }));
   const result = await f.start('play.js', ['demo.yaml']).done; assert.equal(result.code, 0, result.log);
   const session = JSON.parse(fs.readFileSync(path.join(f.out, 'session.json'), 'utf8'));
-  assert.ok(session.scenes[0].end + 0.002 >= session.scenes[0].audioAt + 3.4, JSON.stringify(session));
+  assert.ok(session.scenes[0].end + 0.002 >= session.scenes[0].audioAt + 3.4, result.log + '\n' + JSON.stringify(session));
+});
+
+test('实际录制文件过短时拒绝交付，不能将场景时间截成零后报告成功', { timeout: 60000 }, async (t) => {
+  const f = await fixture(t, { rehearsal: 'cancel', record: 'cancel' }); if (!f) return;
+  const source = YAML.parse(fs.readFileSync(f.file, 'utf8')); delete source.features;
+  source.scenes = [{ id: 'view', narration: '保留完整旁白。', hold: 0, actions: [] }];
+  fs.writeFileSync(f.file, YAML.stringify(source)); f.emptyManifest();
+  const short = path.join(f.root, 'short.webm'), clip = path.join(f.out, 'tts', 'voice.mp3');
+  const ffmpeg = require('../deps').ffmpegPath();
+  for (const args of [
+    ['-f', 'lavfi', '-i', 'anullsrc=r=24000:cl=mono', '-t', '3', clip],
+    ['-f', 'lavfi', '-i', 'color=s=320x180:r=25', '-t', '1', '-c:v', 'libvpx-vp9', '-deadline', 'realtime', short]
+  ]) {
+    const encoded = spawnSync(ffmpeg, ['-nostdin', '-y', '-v', 'error', ...args], { encoding: 'utf8' });
+    assert.equal(encoded.status, 0, encoded.error?.message || encoded.stderr);
+  }
+  const script = f.loadScript(f.file);
+  fs.writeFileSync(path.join(f.out, 'tts', 'manifest.json'), JSON.stringify({ voice: script.voice, rate: script.rate,
+    scenes: { view: { speech: script.scenes[0].speech, dur: 3, file: 'output/tts/voice.mp3' } } }));
+  // 保留真实浏览器执行，只将录制器交付的文件替换为实际的一秒 WebM，复现首次全量发现的故障。
+  fs.appendFileSync(path.join(f.root, 'test-browser.cjs'), `\nconst fixtureLaunch = pw.chromium.launch;
+pw.chromium.launch = async options => {
+  const browser = await fixtureLaunch(options), newContext = browser.newContext.bind(browser);
+  browser.newContext = async options => {
+    const context = await newContext(options), newPage = context.newPage.bind(context);
+    context.newPage = async () => {
+      const page = await newPage(), video = page.video();
+      if (video) video.path = async () => ${JSON.stringify(short)};
+      return page;
+    };
+    return context;
+  };
+  return browser;
+};\n`);
+  const result = await f.start('play.js', ['demo.yaml']).done;
+  assert.equal(result.code, 2, result.log); assert.match(result.log, /录制.*未覆盖|录制.*过短/);
+  assert.doesNotMatch(result.log, /\[完成\]/);
+  assert.equal(fs.existsSync(path.join(f.out, 'session.json')), false);
+  assert.equal(JSON.parse(fs.readFileSync(path.join(f.out, 'run-report.json'), 'utf8')).ok, false);
+  assert.equal(f.state.writes, 0);
 });
 
 test('演练和录制两轮提交独立确认，旧确认不能放行新一轮，录制产生真实视频和正式素材', { timeout: 60000 }, async (t) => {

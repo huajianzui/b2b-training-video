@@ -1,3 +1,5 @@
+# 本地可运行的格式示例，页面没有后端，不操作任何业务系统。
+# 真实系统登录、只读接口和读音规则示例见 examples/authenticated.yaml，必须替换其占位内容。
 # 演示脚本 —— 新流水线的唯一输入（格式说明见 script.js 顶部）
 # 出片：node produce.js        只演练：node produce.js --dry
 
@@ -36,6 +38,7 @@ scenes:
   - name: 进入订单管理
     narration: 首先，在左侧菜单点击订单管理，进入订单列表。
     actions:
+      - goto: demo.html
       - click: { text: 订单管理 }
     expect:
       - visible: { placeholder: 输入订单号或客户名称搜索 }
@@ -43,6 +46,8 @@ scenes:
   - name: 按订单号查询
     narration: 在搜索框输入订单号，可以精确定位到某一笔订单。
     actions:
+      - goto: demo.html
+      - click: { text: 订单管理 }
       - fill:
           target: [{ id: kw }, { placeholder: 输入订单号或客户名称搜索 }]
           text: SO-20261008-002
@@ -53,6 +58,8 @@ scenes:
   - name: 按状态筛选
     narration: 再按订单状态筛选。客服最常用的是已发货，选好后点击搜索。
     actions:
+      - goto: demo.html
+      - click: { text: 订单管理 }
       - select:
           target: [{ id: status }, { css: "select[name=status]" }]
           value: 已发货
@@ -66,6 +73,8 @@ scenes:
   - name: 重置条件
     narration: 查询结束后，点击重置，清空全部筛选条件。
     actions:
+      - goto: demo.html
+      - click: { text: 订单管理 }
       - click: [{ id: btn-reset }, { role: button, name: 重置 }]
     expect:
       - text: 筛选条件已重置
@@ -73,6 +82,8 @@ scenes:
   - name: 导出订单
     narration: 月末对账需要离线核对时，点击导出订单，把当前结果导出。导出任务提交后，稍等片刻即可下载。
     actions:
+      - goto: demo.html
+      - click: { text: 订单管理 }
       - click: [{ testid: btn-export }, { role: button, name: 导出订单 }]
     expect:
       - text: 导出任务已提交

@@ -446,7 +446,7 @@ function sceneFeatureIds(file) {
   return map;
 }
 
-/** login.js 认的是 project 结构（login 段 + url），这里转一下 */
+/** 把已校验 YAML 转成登录模块的内部配置；单项 login CLI 也走相同转换。 */
 function asLoginProject(script) {
   return { url: script.url, login: script.login, readOnlyRequests: script.readOnlyRequests,
     writeRequests: script.safety && script.safety.writeRequests };

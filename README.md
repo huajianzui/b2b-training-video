@@ -6,7 +6,7 @@
 - 带步骤截图的 Word 操作手册
 - 与成品视频同名、对齐片头时间轴的 SRT 字幕
 
-适用于 Cursor、Claude Code、Codex 等能加载本地 Skill 的 Agent。`scripts/script.yaml` 是虚构的订单管理格式示例，只看写法。
+适用于 Cursor、Claude Code、Codex 等能加载本地 Skill 的 Agent。`scripts/script.yaml` 配有本地虚构订单页面，安装依赖后可用 `node play.js script.yaml --dry` 演练工具；页面没有后端，不保存业务数据，导出仅显示示例提示。真实系统配置写法见 [登录与查询示例](scripts/examples/authenticated.yaml)，必须替换地址、选择器和只读接口，凭据通过环境变量提供。
 
 ## 安装
 
@@ -50,16 +50,20 @@ git clone https://github.com/huajianzui/b2b-training-video.git <目录>
 
 重新盘点时，同 ID 的业务说明、权限、前提或页面信息变化也会撤销旧确认，保留用户选择并提示重新确认。人工登录完成后，在本地确认页点击“我已登录完成 · 继续”；登录确认之后，真实提交仍需本轮数据确认。
 
-项目内工具包使用 `node <Skill目录>/scripts/install-runtime.js <项目>/.training-video` 安装或更新，保留已有演示脚本和产物。`produce.js --help` 只显示帮助，非法参数执行前报错。背景音乐纳入合成来源校验，音乐增删或内容变化应从 compose 重跑；旧合成来源记录也需重跑 compose。
+项目内工具包使用 `node <Skill目录>/scripts/install-runtime.js <项目>/.training-video` 安装或更新，包含 `tools/`、本地示例页面及登录格式示例，保留已有演示脚本和产物。`produce.js`、`play.js`、`manual.js`、`features.js`、`login.js` 的 `--help / -h` 只显示帮助，未知选项、缺参数和冲突参数在执行前报错。登录单项使用 `node login.js <脚本.yaml>`；显式 `--project <旧.json>` 保留兼容并提示迁移。背景音乐纳入合成来源校验，音乐增删或内容变化应从 compose 重跑；旧合成来源记录也需重跑 compose。
 
-交付前校验必要的音视频轨道并实际解码。片头片尾生成、验收或依赖失败都会中止；从 `cards` 续跑也执行成品验收。`output/subs.srt` 保留正片时间轴，交付使用 `output/<标题>.srt`，重跑不会累计片头偏移。
+录制文件必须覆盖全部场景、旁白及留白；过短视频会明确失败，不会将时间截成零后报告完成。交付前校验必要的音视频轨道并实际解码。片头片尾生成、验收或依赖失败都会中止；从 `cards` 续跑也执行成品验收。`output/subs.srt` 保留正片时间轴，交付使用 `output/<标题>.srt`，重跑不会累计片头偏移。
 
 覆盖升级即使保留旧 `app/index.html` 和 `build.js`，首页也只进入当前确认页，旧生成 API 返回迁移提示。提交确认会显示实际执行的脚本、环境和功能；当前打开的清单与该脚本不同会明确提示。
 
-在 `scripts/` 中安装依赖后运行 `npm test`。真实浏览器测试设置 `TEST_BROWSER_PATH` 指向 Chrome / Chromium；完整流水线测试还需设置 `PYTHON` 指向已安装 `requirements.txt` 的 Python 3，并安装 Playwright FFmpeg（`npx playwright install ffmpeg`）。缺少这些配置时，测试明确显示跳过；跳过不能当作集成验收通过。
+在仓库的 `scripts/` 中安装依赖后运行 `npm test`。该命令要求零失败、零跳过、零 TODO；缺少环境导致测试跳过时返回非零并列出准备要求。真实浏览器测试设置 `TEST_BROWSER_PATH` 指向 Chrome / Chromium；完整流水线测试还需设置 `PYTHON` 指向已安装 `requirements.txt` 的 Python 3，并安装 Playwright FFmpeg（`npx playwright install ffmpeg`）。使用自定义 Playwright 缓存时设置对应的 `PLAYWRIGHT_BROWSERS_PATH`。本机只做部分检查时显式运行 `npm run test:quick`，输出会标明未完成集成验收；TODO 在两种模式都不能作为回归通过。
+
+[GitHub Actions](.github/workflows/regression.yml) 在 PR、main 推送及手动运行时配置 Windows、Node 24、Python 3.12、Chromium/FFmpeg 与中文字体，调用同一个 `npm test`；测试仅使用隔离目录和本机测试服务，不连接业务系统或在线 TTS。云端实际结果以 Actions 运行记录为准。
 
 历史验证范围见 [P1 修复记录](docs/plans/p1-hardening.md) 和 [P2 修复记录](docs/plans/p2-hardening.md)。历史问题与验收边界见 [P1 复审](docs/reviews/p1-review.md) 和 [P2 复审](docs/reviews/p2-review.md)。
 
 前轮续审与修复见 [续审计划](docs/plans/follow-up-hardening.md) 和 [续审报告](docs/reviews/follow-up-review.md)。
 
-本轮输入、标题渲染与阶段来源修复见 [输入与渲染计划](docs/plans/input-render-hardening.md)，最新验证与升级边界见 [本轮复审报告](docs/reviews/input-render-review.md)。阶段来源已绑定相关工具源码，首次升级后从 check 或完整流程重新生成；显式等待在演练中同样执行，非法 id、数值及配色表达式会报错。
+此前输入、标题渲染与阶段来源修复见 [输入与渲染计划](docs/plans/input-render-hardening.md) 和 [输入与渲染复审](docs/reviews/input-render-review.md)。阶段来源已绑定相关工具源码，首次升级后从 check 或完整流程重新生成；显式等待在演练中同样执行，非法 id、数值及配色表达式会报错。
+
+安装后入口、CLI、样例与零跳过验收的修复见 [入口修复计划](docs/plans/runtime-entry-hardening.md)，最新验证与未覆盖边界见 [入口复审报告](docs/reviews/runtime-entry-review.md)。升级保留已有 YAML；旧 `examples/script.yaml` 使用本地示例时，把相对 URL 改成 `../demo/demo.html`，不要覆盖用户脚本来更新示例。

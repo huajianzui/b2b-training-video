@@ -40,22 +40,31 @@ function installRuntime(source, destination) {
   for (const item of fs.readdirSync(source, { withFileTypes: true })) {
     if (/\.(js|cjs|py)$/.test(item.name)) collect(item.name);
   }
-  for (const dir of ['adapters', 'app', 'prompts']) collect(dir);
-  const samples = ['script.yaml', path.join('examples', 'script.yaml')];
+  for (const dir of ['adapters', 'app', 'prompts', 'tools', 'demo']) collect(dir);
+  const entries = files.map(rel => ({ rel, source: rel }));
+  entries.push({ rel: 'script.yaml', source: 'script.yaml', preserve: true },
+    { rel: path.join('examples', 'script.yaml'), source: 'script.yaml', preserve: true, relocateDemo: true },
+    { rel: path.join('examples', 'authenticated.yaml'), source: path.join('examples', 'authenticated.yaml'), preserve: true });
   // 写入之前检查所有覆盖路径，防止目标子目录链接把写入引到其他位置。
-  for (const rel of [...files, ...samples]) {
+  for (const { rel, source: sourceRel } of entries) {
     const file = path.join(destination, rel);
     for (let current = file; current !== destination; current = path.dirname(current)) {
       if (fs.lstatSync(current, { throwIfNoEntry: false })?.isSymbolicLink()) throw new Error('安装目标包含符号链接，拒绝覆盖：' + rel);
     }
-    const sourceFile = path.join(source, samples.includes(rel) ? 'script.yaml' : rel);
-    if (fs.lstatSync(sourceFile).isSymbolicLink() || !fs.statSync(sourceFile).isFile()) throw new Error('缺少常规工具源文件：' + rel);
+    const sourceFile = path.join(source, sourceRel);
+    for (let current = sourceFile; current !== source; current = path.dirname(current)) {
+      if (fs.lstatSync(current).isSymbolicLink()) throw new Error('工具源文件不能使用符号链接：' + sourceRel);
+    }
+    if (!fs.statSync(sourceFile).isFile()) throw new Error('缺少常规工具源文件：' + sourceRel);
     if (fs.existsSync(file) && !fs.statSync(file).isFile()) throw new Error('工具目标文件被目录占用：' + rel);
   }
-  for (const rel of [...files, ...samples.filter((rel) => !fs.existsSync(path.join(destination, rel)))]) {
+  for (const { rel, source: sourceRel, preserve, relocateDemo } of entries) {
     const file = path.join(destination, rel);
+    if (preserve && fs.existsSync(file)) continue;
     fs.mkdirSync(path.dirname(file), { recursive: true });
-    fs.copyFileSync(path.join(source, samples.includes(rel) ? 'script.yaml' : rel), file);
+    const sourceFile = path.join(source, sourceRel);
+    if (relocateDemo) fs.writeFileSync(file, fs.readFileSync(sourceFile, 'utf8').replace('url: ./demo/demo.html', 'url: ../demo/demo.html'), 'utf8');
+    else fs.copyFileSync(sourceFile, file);
   }
   return destination;
 }

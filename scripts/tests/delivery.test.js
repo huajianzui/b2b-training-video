@@ -13,7 +13,7 @@ const bodySrt = '1\n00:00:00,000 --> 00:00:00,500\n正文第一行\n\n2\n00:00:0
 function fixture(t, cards = {}) {
   if (!process.env.PYTHON) { t.skip('设置 PYTHON 后运行真实片头与字幕交付回归'); return null; }
   const temp = fs.mkdtempSync(path.join(os.tmpdir(), 'training-delivery-')), root = path.join(temp, 'runtime'), out = path.join(root, 'output');
-  fs.cpSync(scripts, root, { recursive: true, filter: (f) => !['node_modules', 'tests', 'output', 'assets', '__pycache__'].includes(path.basename(f)) });
+  fs.cpSync(scripts, root, { recursive: true, filter: (f) => !['node_modules', 'tests', 'output', '__pycache__'].includes(path.basename(f)) });
   fs.symlinkSync(path.join(scripts, 'node_modules'), path.join(root, 'node_modules'), 'junction');
   fs.mkdirSync(out); t.after(() => fs.rmSync(temp, { recursive: true, force: true }));
   const file = path.join(root, 'demo.yaml');

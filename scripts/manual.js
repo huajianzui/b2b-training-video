@@ -13,6 +13,12 @@
  *   node manual.js <脚本.yaml> [--rehearsal]
  */
 
+const CLI = require('./cli').readCli({
+  usage: '用法：node manual.js [脚本.yaml] [--rehearsal]\n'
+    + '  默认使用正式录制素材；--rehearsal 生成独立演练手册。',
+  options: { rehearsal: { type: 'boolean' } }
+});
+
 const fs = require('fs');
 const path = require('path');
 const { requireFrom } = require('./deps');
@@ -26,7 +32,7 @@ const {
 
 const HERE = __dirname;
 const OUT = path.join(HERE, 'output');
-const STAGE = process.argv.includes('--rehearsal') ? 'rehearsal' : 'record';
+const STAGE = CLI.values.rehearsal ? 'rehearsal' : 'record';
 const STEPS_JSON = path.join(OUT, 'manual', STAGE, 'steps.json');
 
 const FONT = { ascii: 'Microsoft YaHei', eastAsia: 'Microsoft YaHei', hAnsi: 'Microsoft YaHei', cs: 'Microsoft YaHei' };
@@ -236,7 +242,7 @@ function build(script, material) {
 }
 
 async function main() {
-  const source = process.argv.slice(2).find((a) => !a.startsWith('--'))
+  const source = CLI.positionals[0]
     || (fs.existsSync(SCRIPT_JSON) && JSON.parse(fs.readFileSync(SCRIPT_JSON, 'utf8')).source);
   if (!source) throw new Error('缺少 YAML 来源；请运行 node manual.js <脚本.yaml>。');
   const script = loadScript(path.resolve(HERE, source), { stage: STAGE });

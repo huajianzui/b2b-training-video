@@ -1,0 +1,55 @@
+name: Complete regression
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  regression:
+    runs-on: windows-latest
+    defaults:
+      run:
+        shell: pwsh
+        working-directory: scripts
+    env:
+      PYTHONDONTWRITEBYTECODE: '1'
+      PYTHONIOENCODING: utf-8
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v7
+        with:
+          node-version: '24'
+          package-manager-cache: false
+      - uses: actions/setup-python@v7
+        with:
+          python-version: '3.12'
+      - name: Install runtime and media dependencies
+        run: |
+          npm install
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          python -m pip install -r requirements.txt
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          npx playwright install chromium ffmpeg
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - name: Configure complete regression
+        run: |
+          $browserPath = node -p "require('playwright').chromium.executablePath()"
+          if ($LASTEXITCODE -ne 0 -or !(Test-Path -LiteralPath $browserPath)) { throw 'Chromium is not installed' }
+          $pythonPath = (Get-Command python).Source
+          Add-Content -LiteralPath $env:GITHUB_ENV -Value "TEST_BROWSER_PATH=$browserPath" -Encoding utf8
+          Add-Content -LiteralPath $env:GITHUB_ENV -Value "PYTHON=$pythonPath" -Encoding utf8
+      - name: Prepare Chinese fonts for isolated media fixtures
+        run: |
+          New-Item -ItemType Directory -Path assets -Force | Out-Null
+          $fontBase = 'https://raw.githubusercontent.com/notofonts/noto-cjk/main/Sans/OTF/SimplifiedChinese'
+          Invoke-WebRequest -Uri "$fontBase/NotoSansCJKsc-Regular.otf" -OutFile assets/msyh.ttc
+          Invoke-WebRequest -Uri "$fontBase/NotoSansCJKsc-Bold.otf" -OutFile assets/msyhbd.ttc
+      - name: Run all regressions with zero skips
+        run: npm test

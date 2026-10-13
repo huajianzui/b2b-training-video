@@ -29,9 +29,9 @@ function fingerprints(script, bgm) {
   const features = script.features ? fileHash(script.features.file) : '';
   const identity = digest({ source: fs.realpathSync(script.source), url: script.url, login: normLogin(script) });
   const rehearsal = require('./script').loadScript(script.source, { stage: 'rehearsal' });
-  const browserCode = codeHash(['script.js', 'features.js', 'play.js', 'requests.js', 'confirmation.js', 'login.js', 'media.js', 'deps.js',
+  const browserCode = codeHash(['script.js', 'features.js', 'play.js', 'requests.js', 'confirmation.js', 'login.js', 'media.js', 'deps.js', 'cli.js',
     ...fs.readdirSync(path.join(__dirname, 'adapters')).filter((file) => file.endsWith('.js')).sort().map((file) => 'adapters/' + file)]);
-  const manualCode = codeHash(['manual.js']);
+  const manualCode = codeHash(['manual.js', 'cli.js']);
   const actions = rehearsal.scenes.map((s) => ({ id: s.id, continue: s.continue, feature: s.feature,
     actions: s.actions.map(({ cue, at, ...a }) => a), expect: s.expect, expectAt: s.expectAt, endExpect: s.endExpect }));
   const check = digest({ identity, features, implementation: browserCode, adapters: rehearsal.adapters, actions, requests: rehearsal.readOnlyRequests, safety: rehearsal.safety });
