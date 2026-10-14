@@ -17,15 +17,16 @@ test('首次安装复制工具，重复升级保留用户脚本、清单和产�
   assert.equal(fs.readFileSync(path.join(f.target, 'produce.js'), 'utf8'), fs.readFileSync(path.join(scripts, 'produce.js'), 'utf8'));
   const userFiles = ['script.yaml', 'examples/script.yaml', 'examples/authenticated.yaml', 'demo.yaml', 'demo.features.yaml', 'output/pipeline.json', 'node_modules/user-owned', 'assets/user-font'];
   for (const rel of userFiles) { const file = path.join(f.target, rel); fs.mkdirSync(path.dirname(file), { recursive: true }); fs.writeFileSync(file, 'user-file:' + rel); }
-  fs.writeFileSync(path.join(f.target, 'produce.js'), 'old-tool-code');
+  const upgradedFiles = ['produce.js', 'prompts/feature-inventory.md', 'prompts/scene-writer.md'];
+  for (const rel of upgradedFiles) fs.writeFileSync(path.join(f.target, rel), 'old-runtime-content');
   installRuntime(scripts, f.target);
   for (const rel of userFiles) assert.equal(fs.readFileSync(path.join(f.target, rel), 'utf8'), 'user-file:' + rel);
-  assert.equal(fs.readFileSync(path.join(f.target, 'produce.js'), 'utf8'), fs.readFileSync(path.join(scripts, 'produce.js'), 'utf8'));
+  for (const rel of upgradedFiles) assert.equal(fs.readFileSync(path.join(f.target, rel), 'utf8'), fs.readFileSync(path.join(scripts, rel), 'utf8'));
   assert.equal(fs.existsSync(path.join(f.target, 'tests')), false);
 });
 test('全新安装包含工作流要求的快照与 MP4 诊断工具，安装后的帮助可运行', (t) => {
   const f = fixture(t); installRuntime(scripts, f.target);
-  for (const rel of ['tools/snap.js', 'tools/mp4info.js', 'tools/files.js', 'uploads.js', 'preflight.js', 'speech.py', 'app/bulk.js', 'prompts/files.md', 'prompts/production-brief.md']) {
+  for (const rel of ['tools/snap.js', 'tools/mp4info.js', 'tools/files.js', 'uploads.js', 'preflight.js', 'speech.py', 'app/bulk.js', 'prompts/files.md', 'prompts/production-brief.md', 'prompts/feature-inventory.md', 'prompts/scene-writer.md']) {
     assert.equal(fs.readFileSync(path.join(f.target, rel), 'utf8'), fs.readFileSync(path.join(scripts, rel), 'utf8'));
   }
   const r = spawnSync(process.execPath, [path.join(f.target, 'tools/snap.js'), '--help'], {

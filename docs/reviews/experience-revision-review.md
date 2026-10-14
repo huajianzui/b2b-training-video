@@ -1,6 +1,6 @@
 # 制作体验改版验证记录
 
-对应计划：[experience-revision](../plans/experience-revision.md)。状态：三批实现、独立复审、最终回归与 OVM 实测完成。以下保留各批次当时结果；以末节为最终验收口径。
+对应计划：[experience-revision](../plans/experience-revision.md)。状态：三批实现、独立复审、最终回归与 OVM 实测完成。以下保留各批次当时结果；以末节为工程验收口径。用户随后提供旧视频作对照，确认入口遗漏、复杂交互教学缩水等内容问题；教学完整性不通过，见[培训内容质量复审](teaching-quality-review.md)。
 
 ## 第一批：可靠性
 
