@@ -39,7 +39,7 @@ function matches(rule, method, value, { ignoreSearch = false } = {}) {
   }); } catch { return false; }
 }
 
-function assertDisjoint(readOnly, writes) {
+function assertDisjoint(readOnly, writes, { message } = {}) {
   const variable = (s) => /^\{[a-zA-Z][\w]*\}$/.test(s);
   for (const r of readOnly) for (const w of writes) {
     if (r.method !== w.method && !(r.method === 'HEAD' && w.method === 'GET')) continue;
@@ -47,8 +47,9 @@ function assertDisjoint(readOnly, writes) {
     if (a.origin !== b.origin) continue;
     const left = a.pathname.split('/').map(decodeURIComponent), right = b.pathname.split('/').map(decodeURIComponent);
     if (left.length === right.length && left.every((s, i) => s === right[i] || variable(s) || variable(right[i]))) {
-      throw new Error('readOnlyRequests 与 writeRequests 路径相交：' + r.method + ' ' + a.origin + a.pathname
-        + '；共用查询和修改的接口不能整体标为只读，请使用可区分的接口地址。');
+      throw new Error(message ? message + '：' + r.method + ' ' + a.origin + a.pathname
+        : 'readOnlyRequests 与 writeRequests 路径相交：' + r.method + ' ' + a.origin + a.pathname
+          + '；共用查询和修改的接口不能整体标为只读，请使用可区分的接口地址。');
     }
   }
 }

@@ -58,6 +58,7 @@ function stepText(st) {
     }
     case 'fill': return '在' + N + '输入框中输入' + quote(st.text);
     case 'select': return '在' + N + '下拉框中选择' + quote(st.value);
+    case 'upload': return '选择' + (N || '需要上传的文件');
     case 'hover': return null;
     case 'waitFor': return null;
     case 'press': return '按下键盘' + bracket(st.key) + '键';
@@ -180,7 +181,9 @@ function build(script, material) {
       levels: [{ level: 0, format: LevelFormat.DECIMAL, text: '%1.', alignment: AlignmentType.LEFT,
         style: { paragraph: { indent: { left: 720, hanging: 360 } } } }],
     });
-    for (const st of mat.steps) {
+    for (const [index, originalStep] of mat.steps.entries()) {
+      // 操作顺序由来源校验固定；采用当前文案副本，不覆盖原始录制素材。
+      const st = { ...originalStep, label: scene.actions[index]?.label || '' };
       const text = stepText(st);
       if (!text) continue;
       body.push(new Paragraph({ numbering: { reference: ref, level: 0 }, spacing: { before: 120, after: 60, line: 360 }, children: [run(text)] }));
@@ -246,7 +249,8 @@ async function main() {
   const source = CLI.positionals[0]
     || (fs.existsSync(SCRIPT_JSON) && JSON.parse(fs.readFileSync(SCRIPT_JSON, 'utf8')).source);
   if (!source) throw new Error('缺少 YAML 来源；请运行 node manual.js <脚本.yaml>。');
-  const script = loadScript(path.resolve(HERE, source), { stage: STAGE });
+  const recordedUploads = CLI.values.post ? JSON.parse(fs.readFileSync(path.join(OUT, 'pipeline.json'), 'utf8')).stages?.record?.uploads || [] : [];
+  const script = loadScript(path.resolve(HERE, source), { stage: STAGE, recordedUploads });
   const release = acquireLock(OUT); process.once('exit', release);
   if (!fs.existsSync(STEPS_JSON)) throw new Error('缺少 ' + STAGE + ' 手册素材，请运行对应阶段的 play.js <脚本.yaml> --shots。');
   const material = JSON.parse(fs.readFileSync(STEPS_JSON, 'utf8'));

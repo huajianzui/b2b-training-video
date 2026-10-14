@@ -33,12 +33,13 @@
  */
 
 const CLI = require.main === module ? require('./cli').readCli({
-  usage: '用法：node login.js [脚本.yaml] [--check | --force | --clear]\n'
+  usage: '用法：node login.js [脚本.yaml] [--check | --force | --clear] [--rehearsal]\n'
+    + '  --rehearsal                          按演练阶段校验 YAML\n'
     + '  --mode <manual|auto|none|wait|confirm>  临时覆盖登录方式\n'
     + '  --start <manual|auto>                人工确认或自动判定登录成功\n'
     + '  --project <旧配置.json>              显式兼容入口，请迁移到 YAML',
   options: { check: { type: 'boolean' }, force: { type: 'boolean' }, clear: { type: 'boolean' },
-    project: { type: 'string' }, mode: { type: 'string' }, start: { type: 'string' } },
+    project: { type: 'string' }, mode: { type: 'string' }, start: { type: 'string' }, rehearsal: { type: 'boolean' } },
   validate: ({ values, positionals }) => {
     if (values.project && positionals.length) throw new Error('YAML 和 --project 不能同时指定。');
     if (['check', 'force', 'clear'].filter(name => values[name]).length > 1) throw new Error('--check、--force、--clear 不能同时使用。');
@@ -91,7 +92,7 @@ function readProject(file) {
 
 function readLoginScript(file = 'script.yaml') {
   const { loadScript, asLoginProject } = require('./script');
-  return asLoginProject(loadScript(path.resolve(HERE, file)));
+  return asLoginProject(loadScript(path.resolve(HERE, file), { stage: CLI?.values.rehearsal ? 'rehearsal' : 'record' }));
 }
 
 /**

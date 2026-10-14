@@ -86,3 +86,18 @@ test('未重新确认前再次盘点仍保留变化标记', (t) => {
   mergeFresh(f.saved, f.fresh); mergeFresh(f.saved, f.fresh);
   assert.equal(loadFeatures(f.saved).features[0].status, 'changed'); assert.equal(loadFeatures(f.saved).confirmedAt, '');
 });
+
+test('准备写入与最终收尾独立，重盘点改变准备接口会撤销旧许可', t => {
+  const f = fixture(t); f.source.features[0].include = true; f.source.features[0].rehearsalMode = 'cancel';
+  f.source.features[0].preparation = { description: '上传并产生审计记录', requests: [{ method: 'POST', url: '/upload' }], rehearsal: false, record: false };
+  f.save(f.source);
+  saveDecisions(f.saved, { create: { preparation: { rehearsal: true } } }, true);
+  let feature = loadFeatures(f.saved).features[0]; assert.equal(feature.preparation.rehearsal, true); assert.equal(feature.preparation.record, false);
+  assert.equal(feature.writeMode, 'cancel'); assert.equal(feature.rehearsalMode, 'cancel');
+  assert.equal(mergeFresh(f.saved, f.fresh).changed, false); assert.equal(loadFeatures(f.saved).features[0].preparation.rehearsal, true);
+  const next = structuredClone(f.source); next.features[0].preparation.requests[0].url = '/new-upload';
+  fs.writeFileSync(f.fresh, YAML.stringify(next)); assert.equal(mergeFresh(f.saved, f.fresh).changed, true);
+  feature = loadFeatures(f.saved).features[0]; assert.equal(feature.preparation.rehearsal, false); assert.equal(feature.preparation.record, false);
+  const bad = structuredClone(f.source); bad.features[0].preparation.requests = bad.features[0].writeRequests;
+  fs.writeFileSync(f.fresh, YAML.stringify(bad)); assert.throws(() => loadFeatures(f.fresh), /路径相交/);
+});

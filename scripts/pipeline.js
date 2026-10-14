@@ -25,11 +25,11 @@ function codeHash(files) {
   return digest(files.map((file) => ({ file, hash: fileHash(path.join(__dirname, file)) })));
 }
 
-function fingerprints(script, bgm) {
+function fingerprints(script, bgm, { post = false } = {}) {
   const features = script.features ? fileHash(script.features.file) : '';
   const identity = digest({ source: fs.realpathSync(script.source), url: script.url, login: normLogin(script) });
-  const rehearsal = require('./script').loadScript(script.source, { stage: 'rehearsal' });
-  const browserCode = codeHash(['script.js', 'features.js', 'play.js', 'requests.js', 'confirmation.js', 'login.js', 'media.js', 'deps.js', 'cli.js',
+  const rehearsal = post ? script : require('./script').loadScript(script.source, { stage: 'rehearsal' });
+  const browserCode = codeHash(['script.js', 'features.js', 'play.js', 'requests.js', 'confirmation.js', 'login.js', 'media.js', 'deps.js', 'cli.js', 'uploads.js',
     ...fs.readdirSync(path.join(__dirname, 'adapters')).filter((file) => file.endsWith('.js')).sort().map((file) => 'adapters/' + file)]);
   const manualCode = codeHash(['manual.js', 'cli.js']);
   const actions = rehearsal.scenes.map((s) => ({ id: s.id, continue: s.continue, feature: s.feature,
@@ -72,7 +72,7 @@ function artifact(out, rel) {
 function verifyCapture(out, script, bgm = null) {
   const state = JSON.parse(fs.readFileSync(path.join(out, 'pipeline.json'), 'utf8'));
   const saved = state.stages && state.stages.record;
-  if (!saved || !saved.capture || saved.capture !== fingerprints(script, bgm).capture || !saved.execution) {
+  if (!saved || !saved.capture || saved.capture !== fingerprints(script, bgm, { post: true }).capture || !saved.execution) {
     throw new Error('纯后期缺少录制来源，或操作、角色、授权/工具实现已改变；不能复用画面，请明确准备重录。');
   }
   for (const name of ['raw.webm', 'session.json', 'run-report.json']) {
@@ -99,7 +99,7 @@ function checkAudioWindows(out, script) {
 
 function openPipeline(out, script, from, { manual = true, skipCheck = false, bgm = null, post = false } = {}) {
   const stateFile = path.join(out, 'pipeline.json');
-  const hashes = fingerprints(script, bgm);
+  const hashes = fingerprints(script, bgm, { post });
   let previous = null;
   if (fs.existsSync(stateFile)) {
     try { previous = JSON.parse(fs.readFileSync(stateFile, 'utf8')); }
@@ -157,7 +157,8 @@ function openPipeline(out, script, from, { manual = true, skipCheck = false, bgm
     complete(stage, files) {
       if (!hashes[stage]) return;
       state.stages[stage] = { input: hashes[stage], artifacts: files.map((file) => artifact(out, file)) };
-      if (stage === 'record') Object.assign(state.stages[stage], { capture: hashes.capture, execution: require('./requests').executionHash(script) });
+      if (stage === 'record') Object.assign(state.stages[stage], { capture: hashes.capture, execution: require('./requests').executionHash(script),
+        uploads: require('./uploads').listUploads(script) });
       save();
     },
   };

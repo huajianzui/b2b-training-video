@@ -53,6 +53,8 @@ git clone https://github.com/huajianzui/b2b-training-video.git <目录>
 
 文案/读音更正用 `node produce.js <脚本> --post`：复用经校验的原始录像，不重放业务操作；新音频超出原画面时间窗时拒绝。阶段耗时在 output/timing.jsonl，真实提交等待在运行报告中单列。
 
+附件和导入使用 `upload` 动作，上传/预检的提前写入与最终提交分别批准；隐藏文件控件可直接定位。样本按内容摘要绑定，`tools/files.js add/cleanup` 只管理本轮登记副本，原文件保留。格式与命令见 [文件参考](scripts/prompts/files.md)。仅验证演练阶段时，`script.js` 与 `login.js` 使用 `--rehearsal`，`produce --dry` 自动选择演练阶段。
+
 重新盘点时，同 ID 的业务说明、权限、前提或页面信息变化也会撤销旧确认，保留用户选择并提示重新确认。人工登录完成后，在本地确认页点击“我已登录完成 · 继续”；登录确认之后，真实提交仍需本轮数据确认。
 
 项目内工具包使用 `node <Skill目录>/scripts/install-runtime.js <项目>/.training-video` 安装或更新，包含 `tools/`、本地示例页面及登录格式示例，保留已有演示脚本和产物。`produce.js`、`play.js`、`manual.js`、`features.js`、`login.js` 的 `--help / -h` 只显示帮助，未知选项、缺参数和冲突参数在执行前报错。登录单项使用 `node login.js <脚本.yaml>`；显式 `--project <旧.json>` 保留兼容并提示迁移。背景音乐纳入合成来源校验，音乐增删或内容变化应从 compose 重跑；旧合成来源记录也需重跑 compose。

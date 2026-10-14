@@ -140,7 +140,7 @@
 <script>
 const $ = (s) => document.querySelector(s);
 const esc = (s) => String(s == null ? '' : s).replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
-const MODE = { cancel: '填完取消，不保存', submit: '真实提交' };
+const MODE = { cancel: '最终取消', submit: '最终提交' };
 
 let file = new URLSearchParams(location.search).get('f') || '';
 let data = null;
@@ -230,6 +230,10 @@ function render() {
           + (f.blocked ? '<div class="blocked">⚠ ' + esc(f.blocked) + '</div>' : '') + '</td>'
           + '<td>' + mode + (f.submitRestriction ? '<div class="blocked">禁止提交：' + esc(f.submitRestriction) + '</div>' : '')
           + (f.modeOverrides.length ? '<div class="meta">单项例外：' + f.modeOverrides.map(k => k === 'rehearsalMode' ? '演练' : '录制').join('、') + '</div>' : '')
+          + (f.preparation.requests.length ? '<div class="meta">准备写入：' + esc(f.preparation.description) + '</div>'
+            + ['rehearsal', 'record'].map(key => '<label><input type="checkbox" aria-label="' + esc(f.name) + (key === 'rehearsal' ? '演练准备写入' : '录制准备写入') + '" data-prep="' + esc(f.id) + '" data-key="' + key + '"'
+              + (f.preparation[key] ? ' checked' : '') + (busy || !f.include || f.blocked || !data.environment.testData ? ' disabled' : '') + '>'
+              + (key === 'rehearsal' ? '演练允许' : '录制允许') + '</label>').join(' ') : '')
           + '</td><td class="meta">' + meta + '</td><td>' + sceneCell(f) + '</td></tr>';
       }).join('')
       + '</tbody></table></div></section>';
@@ -242,6 +246,9 @@ function render() {
   document.querySelectorAll('select[data-mode]').forEach((el) => { el.onchange = () => {
     const f = feat(el.dataset.mode); f[el.dataset.key] = el.value;
     f.modeOverrides = [...new Set([...f.modeOverrides, el.dataset.key])]; dirty = true; render();
+  }; });
+  document.querySelectorAll('input[data-prep]').forEach(el => { el.onchange = () => {
+    feat(el.dataset.prep).preparation[el.dataset.key] = el.checked; dirty = true; render();
   }; });
   document.querySelectorAll('[data-bulk]').forEach(bar => { bar.querySelector('button').onclick = () => {
     const values = Object.fromEntries([...bar.querySelectorAll('select')].filter(el => el.value).map(el => [el.dataset.key, el.value]));
@@ -274,7 +281,8 @@ function renderState() {
   const changes = data.features.filter((f) => f.status).length;
   $('#stat').innerHTML = '共 <b>' + data.features.length + '</b> 个功能，已选 <b>' + on.length + '</b> 个'
     + '（只读 ' + (on.length - writes.length) + '，写数据 ' + writes.length
-    + (writes.length ? '，其中真实提交 ' + writes.filter((f) => f.writeMode === 'submit').length : '') + '）'
+    + (writes.length ? '，正式最终提交 ' + writes.filter((f) => f.writeMode === 'submit').length
+      + '；准备写入：演练 ' + writes.filter(f => f.preparation.rehearsal).length + ' / 录制 ' + writes.filter(f => f.preparation.record).length : '') + '）'
     + (miss.length ? '　<span class="scene-miss">缺场景 ' + miss.length + ' 个</span>' : '');
 
   const st = $('#state');
@@ -303,7 +311,8 @@ function renderState() {
 
 function decisions() {
   const d = {};
-  for (const f of data.features) d[f.id] = { include: f.include, writeMode: f.writeMode, rehearsalMode: f.rehearsalMode, modeOverrides: f.modeOverrides };
+  for (const f of data.features) d[f.id] = { include: f.include, writeMode: f.writeMode, rehearsalMode: f.rehearsalMode, modeOverrides: f.modeOverrides,
+    ...(f.preparation.requests.length ? { preparation: { rehearsal: f.preparation.rehearsal, record: f.preparation.record } } : {}) };
   return d;
 }
 
@@ -371,7 +380,7 @@ async function pollStatus() {
       $('#dataMismatch').textContent = '注意：当前清单关联 ' + (data && data.script || '未配置脚本') + '；本次确认将授权下面显示的另一份脚本。';
       $('#dataSummary').textContent = '脚本：' + currentWait.title + ' · ' + currentWait.source.split(/[\\/]/).pop()
         + '\n路径：' + currentWait.source + '\n环境：' + currentWait.environment + ' · ' + currentWait.url
-        + '\n功能：' + currentWait.features.map((f) => f.name).join('、');
+        + '\n功能：' + currentWait.features.map((f) => f.name + (f.preparation ? '（准备写入：' + f.preparation + '；最终' + (f.mode === 'submit' ? '提交' : '取消') + '）' : '')).join('、');
     }
     if (changed && data) render();
   } catch (e) { $('#msg').textContent = '读取提交状态失败：' + e.message; }

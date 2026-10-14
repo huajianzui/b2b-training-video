@@ -22,7 +22,7 @@ test('--help 在未安装依赖时也只显示帮助，不编译脚本或创建�
   assert.equal(fs.existsSync(path.join(f.root, 'output')), false);
 });
 
-for (const name of ['play.js', 'manual.js', 'features.js', 'login.js']) {
+for (const name of ['play.js', 'manual.js', 'features.js', 'login.js', 'script.js', 'preflight.js', 'tools/files.js']) {
   test(name + ' 的帮助不需要依赖，损坏的旧配置与产物也不能触发执行', (t) => {
     const f = fixture(t), output = path.join(f.root, 'output'); fs.mkdirSync(output);
     fs.writeFileSync(path.join(output, 'script.json'), 'INVALID_CACHED_JSON');

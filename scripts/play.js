@@ -115,7 +115,7 @@ const CURSOR_OVERLAY = `
 
 // ---------------------------------------------------------------- 定位
 
-function toLocator(page, c) {
+function toLocator(page, c, visible = true) {
   let loc;
   switch (c.by) {
     case undefined: loc = page.locator(c.selector); break;
@@ -128,7 +128,7 @@ function toLocator(page, c) {
     case 'text': loc = page.getByText(c.value, { exact: c.exact !== false }); break;
     default: throw new Error('未知定位方式：' + c.by);
   }
-  loc = loc.filter({ visible: true });
+  if (visible) loc = loc.filter({ visible: true });
   return c.nth !== undefined ? loc.nth(c.nth) : loc.first();
 }
 
@@ -255,6 +255,30 @@ async function runAction(ctx, adapters, a, notes, step) {
   };
 
   switch (a.op) {
+    case 'upload': {
+      const files = require('./uploads').payloads(a.files);
+      let input; const deadline = Date.now() + CFG.locateTimeout;
+      while (!input) {
+        for (const candidate of a.target) {
+          const target = toLocator(page, candidate, false);
+          if (!await target.count()) continue;
+          input = await target.evaluate(n => n.matches('input[type=file]')) ? target : target.locator('input[type=file]').first();
+          if (await input.count()) break;
+          input = null;
+        }
+        if (!input) {
+          if (Date.now() >= deadline) throw new Error('upload 未找到 input[type=file]，请核实真实控件');
+          await wait(200);
+        }
+      }
+      await input.setInputFiles(files);
+      if (SHOTS) {
+        const parent = input.locator('..');
+        const box = await parent.boundingBox();
+        step.shot = await cleanShot(page, path.join(SHOT_DIR, step.id + '.png'), box);
+      }
+      return a.label || '选择 ' + files.length + ' 个文件';
+    }
     case 'goto':
       // 场景开头的 goto 是为了能单独执行；已经在这一页时再刷新会让视频闪一下
       if (page.url() === a.url) return a.url + '（已在此页）';
@@ -456,7 +480,7 @@ async function main() {
 
       for (const [i, a] of scene.actions.entries()) {
         if (i === scene.expectAt) await checkpoint(scene.expect);
-        if (i >= scene.expectAt && scene.writeMode === 'submit') guard.grant(scene.writeRequests);
+        guard.grant(a.prepare ? scene.preparationRequests : i >= scene.expectAt && scene.writeMode === 'submit' ? scene.writeRequests : []);
         const step = { id: scene.id + '-' + String(i + 1).padStart(2, '0'), op: a.op, label: a.label || '',
           text: a.text, value: a.value, key: a.key, url: a.url, y: a.y };
         doc.steps.push(step);
@@ -476,6 +500,8 @@ async function main() {
       guard.grant([]);
       for (const n of entry.notes) console.log('   ⚠ ' + n);
     } catch (err) {
+      // 异步上传被策略拒绝后，等待结果可能先超时；保留真正的请求阻塞原因。
+      try { guard.assert(); } catch (policyError) { err = policyError; }
       entry.status = 'failed';
       entry.error = err.message.split('\n')[0];
       entry.failure = await captureFailure(page, scene);

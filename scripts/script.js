@@ -42,9 +42,13 @@
  *   任一写法都可加 nth: 1、exact: true
  *
  * 用法：
- *   node script.js [script.yaml]        校验并输出 output/script.json
+ *   node script.js [script.yaml] [--rehearsal]  校验对应阶段并输出 output/script.json
  */
 
+const CLI = require.main === module ? require('./cli').readCli({
+  usage: '用法：node script.js [脚本.yaml] [--rehearsal]\n校验脚本并输出 output/script.json；--rehearsal 只校验演练阶段。',
+  options: { rehearsal: { type: 'boolean' } }
+}) : null;
 const fs = require('fs');
 const path = require('path');
 const { requireFrom } = require('./deps');
@@ -105,10 +109,12 @@ function normTarget(raw, where) {
  * 动作写法：单键对象，如 { click: target } / { fill: { target, text } } / { wait: 1.5 }
  * 可附带 label：手册里对这个控件的称呼（定位写的是 id 之类时，界面上读不出名字）
  */
-function normAction(raw, where, baseUrl) {
-  const a = normActionBody(raw, where, baseUrl);
+function normAction(raw, where, baseUrl, baseDir, recordedUploads) {
+  const a = normActionBody(raw, where, baseUrl, baseDir, recordedUploads);
   if (raw.label !== undefined) a.label = String(raw.label);
   if (raw.at !== undefined) a.at = String(raw.at);
+  if (raw.prepare !== undefined && typeof raw.prepare !== 'boolean') throw new ScriptError(where + ' prepare 必须是布尔值');
+  if (raw.prepare) a.prepare = true;
   return a;
 }
 
@@ -124,16 +130,20 @@ function resolveCue(a, narration, timing, where) {
   a.cue = speakWeight(narration.slice(0, pos)) / (speakWeight(narration) || 1);
 }
 
-function normActionBody(raw, where, baseUrl) {
+function normActionBody(raw, where, baseUrl, baseDir, recordedUploads) {
   if (!raw || typeof raw !== 'object' || Array.isArray(raw)) {
     throw new ScriptError(where + '：动作要写成「动作名: 参数」，实际是 ' + JSON.stringify(raw));
   }
-  const keys = Object.keys(raw).filter((k) => k !== 'label' && k !== 'at');
+  const keys = Object.keys(raw).filter((k) => !['label', 'at', 'prepare'].includes(k));
   if (keys.length !== 1) throw new ScriptError(where + '：一个动作只能有一个动作名，实际是 ' + keys.join(', '));
   const op = keys[0];
   const arg = raw[op];
 
   switch (op) {
+    case 'upload':
+      if (!arg || !arg.target) throw new ScriptError(where + ' upload 要写成 {target, files: [...]}');
+      return { op, target: normTarget(arg.target, where + ' upload'),
+        files: require('./uploads').normalizeFiles(arg.files, baseDir, recordedUploads) };
     case 'goto':
       return { op, url: new URL(String(arg), baseUrl).href };
     case 'click':
@@ -156,7 +166,7 @@ function normActionBody(raw, where, baseUrl) {
     case 'wait':
       return { op, ms: milliseconds(arg, where + ' wait') };
     default:
-      throw new ScriptError(where + '：不认识的动作「' + op + '」（可用：goto / click / hover / fill / select / press / scroll / wait / waitFor）');
+      throw new ScriptError(where + '：不认识的动作「' + op + '」（可用：goto / click / hover / fill / select / upload / press / scroll / wait / waitFor）');
   }
 }
 
@@ -216,6 +226,7 @@ function applyFeature(s, featById, where, stage, continued) {
   });
   const on = feats.filter((f) => f.include);
   if (!on.length) return null;
+  s = { ...s, preparationRequests: on.filter(f => f.preparation[stage]).flatMap(f => f.preparation.requests) };
   if (!s.ending) {
     if (on.some((f) => f.kind === 'write') && !continued) throw new ScriptError(where + '：写功能组尾必须提供 ending，不能在基础动作中保存。');
     return s;
@@ -297,7 +308,7 @@ function normCard(raw, fallbackTitle, speech) {
   return card;
 }
 
-function normalize(doc, file, { stage = 'record' } = {}) {
+function normalize(doc, file, { stage = 'record', recordedUploads = [] } = {}) {
   if (!['rehearsal', 'record'].includes(stage)) throw new ScriptError('执行阶段只能是 rehearsal / record');
   if (!doc || typeof doc !== 'object') throw new ScriptError('脚本为空或不是对象');
   const baseDir = path.dirname(path.resolve(file));
@@ -324,7 +335,7 @@ function normalize(doc, file, { stage = 'record' } = {}) {
   const scenes = doc.scenes.map((raw, i) => {
     const where = '第 ' + (i + 1) + ' 个场景' + (raw && raw.name ? '「' + raw.name + '」' : '');
     if (!raw || typeof raw !== 'object') throw new ScriptError(where + '：写法不认识');
-    for (const key of ['writeMode', 'writeRequests', 'expectAt', 'endExpect']) {
+    for (const key of ['writeMode', 'writeRequests', 'preparationRequests', 'expectAt', 'endExpect']) {
       if (Object.hasOwn(raw, key)) throw new ScriptError(where + '：' + key + ' 是内部字段，不能在场景中填写；提交授权由已确认功能清单和 ending 派生。');
     }
     const id = String(raw.id || 's' + String(i + 1).padStart(2, '0'));
@@ -348,7 +359,8 @@ function normalize(doc, file, { stage = 'record' } = {}) {
     const narration = s.narration ? String(s.narration).trim() : '';
     const actions = (s.actions || []).map((a, j) => {
       const w = where + ' 第 ' + (j + 1) + ' 个动作';
-      const act = normAction(a, w, url);
+      const act = normAction(a, w, url, baseDir, recordedUploads);
+      if (act.prepare && !(s.preparationRequests || []).length) throw new ScriptError(w + '：本阶段尚未批准上传/预检副作用');
       resolveCue(act, narration, timing, w);
       return act;
     });
@@ -369,6 +381,7 @@ function normalize(doc, file, { stage = 'record' } = {}) {
       feature: raw.feature === undefined ? [] : [].concat(raw.feature).map(String),
       writeMode: s.writeMode || 'cancel',
       writeRequests: normalizeRequests(s.writeRequests, url, where + ' writeRequests'),
+      preparationRequests: normalizeRequests(s.preparationRequests, url, where + ' preparationRequests'),
     };
   }).filter(Boolean);
   if (!scenes.length) throw new ScriptError('按功能清单筛选后没有可演示的场景');
@@ -377,10 +390,15 @@ function normalize(doc, file, { stage = 'record' } = {}) {
   const narrations = [intro, outro, ...scenes].filter((x) => x && x.narration).map((x) => String(x.narration));
 
   const readOnlyRequests = normalizeRequests(doc.readOnlyRequests, url, 'readOnlyRequests', { readOnly: true });
-  const writeRequests = feat ? feat.features.flatMap((f) => normalizeRequests(f.writeRequests, url, 'writeRequests')) : [];
+  const finalRequests = feat ? feat.features.flatMap(f => normalizeRequests(f.writeRequests, url, 'writeRequests')) : [];
+  const preparationRequests = feat ? feat.features.flatMap(f => normalizeRequests(f.preparation.requests, url, 'preparation.requests')) : [];
+  // 使用真实来源统一解析所有功能，防止相对/绝对别名或其他功能的动态路径借走最终提交权限。
+  assertDisjoint(preparationRequests, finalRequests, { message: '准备写入与最终提交路径相交，请使用可区分的接口' });
+  const writeRequests = [...finalRequests, ...preparationRequests];
   const approvedWriteRequests = feat ? feat.features.filter((f) => f.include && f.kind === 'write'
     && (stage === 'rehearsal' ? f.rehearsalMode : f.writeMode) === 'submit'
     && scenes.some((s) => s.feature.includes(f.id))).flatMap((f) => normalizeRequests(f.writeRequests, url, 'writeRequests')) : [];
+  approvedWriteRequests.push(...scenes.filter(s => s.actions.some(a => a.prepare)).flatMap(s => s.preparationRequests));
   assertDisjoint(readOnlyRequests, writeRequests);
   return {
     source: path.resolve(file),
@@ -388,7 +406,8 @@ function normalize(doc, file, { stage = 'record' } = {}) {
     readOnlyRequests,
     safety: { environment: feat ? feat.environment : { name: '', testData: false },
       writes: feat ? feat.features.filter((f) => f.include && f.kind === 'write').map((f) => ({ id: f.id, name: f.name,
-        mode: stage === 'rehearsal' ? f.rehearsalMode : f.writeMode })) : [],
+        mode: stage === 'rehearsal' ? f.rehearsalMode : f.writeMode,
+        preparation: f.preparation[stage] ? f.preparation.description : '' })) : [],
       writeRequests, approvedWriteRequests },
     title: String(doc.title || '操作演示'),
     url,
@@ -455,13 +474,9 @@ function asLoginProject(script) {
 module.exports = { loadScript, sceneFeatureIds, asLoginProject, ScriptError, DEFAULT_OUT };
 
 if (require.main === module) {
-  if (process.argv.includes('--help') || process.argv.includes('-h')) {
-    console.log('用法：node script.js [脚本.yaml]   校验脚本并输出 output/script.json（格式见本文件开头注释）');
-    process.exit(0);
-  }
-  const file = path.resolve(HERE, process.argv[2] || 'script.yaml');
+  const file = path.resolve(HERE, CLI.positionals[0] || 'script.yaml');
   try {
-    const s = loadScript(file);
+    const s = loadScript(file, { stage: CLI.values.rehearsal ? 'rehearsal' : 'record' });
     const release = require('./lock').acquireLock(path.dirname(DEFAULT_OUT));
     process.once('exit', release);
     fs.mkdirSync(path.dirname(DEFAULT_OUT), { recursive: true });

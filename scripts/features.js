@@ -37,6 +37,11 @@
  *       rehearsalMode: ~                 演练取消或提交，由用户单独选择；未选择不能执行写功能
  *       modeOverrides: []                单项例外的阶段键；批量默认保留，明确覆盖才替换
  *       submitRestriction: 禁止真实通知   固定禁止提交的原因；普通批量覆盖不可解除
+ *       preparation:                     上传/预检等提前发生的副作用，独立于最终提交
+ *         description: 选择文件即上传
+ *         rehearsal: false               用户明确批准才填 true
+ *         record: false
+ *         requests: [{method: POST, url: /api/uploads}]
  *       writeRequests: [{method: POST, url: /api/orders}]  实际写接口，来自业务代码
  *       status: new | changed | removed  改版后对比时标注，确认后清除
  *
@@ -61,7 +66,7 @@ const CLI = require.main === module ? require('./cli').readCli({
 const fs = require('fs');
 const path = require('path');
 const { requireFrom } = require('./deps');
-const { normalizeRequests } = require('./requests');
+const { normalizeRequests, assertDisjoint } = require('./requests');
 
 const KINDS = ['read', 'write'];
 const WRITE_MODES = ['cancel', 'submit'];
@@ -104,6 +109,13 @@ function normalize(raw, file) {
     const rehearsalMode = str(f.rehearsalMode);
     if (rehearsalMode && !WRITE_MODES.includes(rehearsalMode)) throw new FeatureError(w + '：rehearsalMode 只能是 cancel / submit');
     normalizeRequests(f.writeRequests, 'https://policy.invalid/', w + ' writeRequests');
+    const preparation = f.preparation || {};
+    const prepRequests = normalizeRequests(preparation.requests, 'https://policy.invalid/', w + ' preparation.requests');
+    if (prepRequests.length && (kind !== 'write' || !str(preparation.description))) throw new FeatureError(w + '：有准备写入须标为 write 并说明副作用');
+    for (const key of ['rehearsal', 'record']) if (preparation[key] !== undefined && typeof preparation[key] !== 'boolean') throw new FeatureError(w + '：准备阶段许可必须是布尔值');
+    if ((preparation.rehearsal || preparation.record) && (!prepRequests.length || !environment.testData)) throw new FeatureError(w + '：准备写入需要测试环境许可和精确接口');
+    assertDisjoint(prepRequests, normalizeRequests(f.writeRequests, 'https://policy.invalid/', w + ' writeRequests'),
+      { message: '准备写入与最终提交路径相交，请使用可区分的接口' });
     const modeOverrides = f.modeOverrides === undefined
       ? ['rehearsalMode', 'writeMode'].filter(k => Object.hasOwn(f, k) && f[k])
       : f.modeOverrides;
@@ -132,6 +144,8 @@ function normalize(raw, file) {
       rehearsalMode,
       modeOverrides: [...new Set(modeOverrides)],
       submitRestriction: str(f.submitRestriction),
+      preparation: { description: str(preparation.description), rehearsal: preparation.rehearsal === true, record: preparation.record === true,
+        requests: (preparation.requests || []).map(r => ({ method: r.method.toUpperCase(), url: r.url })) },
       writeRequests: (f.writeRequests || []).map((r) => ({ method: r.method.toUpperCase(), url: r.url })),
       status: str(f.status),
     };
@@ -155,6 +169,7 @@ function loadFeatures(file) {
 
 function validateDecisions(manifest, { requireRehearsal = true } = {}) {
   for (const f of manifest.features.filter((f) => f.include && f.kind === 'write' && f.status !== 'removed')) {
+    if (f.blocked && (f.preparation.rehearsal || f.preparation.record)) throw new FeatureError('阻塞功能不能批准准备写入：' + f.name);
     if (requireRehearsal && !f.rehearsalMode) throw new FeatureError('功能「' + f.name + '」缺少 rehearsalMode：请在确认页单独选择演练取消或真实提交。');
     if (f.writeMode === 'submit' || f.rehearsalMode === 'submit') {
       if (f.blocked || f.submitRestriction) throw new FeatureError('功能「' + f.name + '」不能 submit：' + (f.submitRestriction || f.blocked));
@@ -178,6 +193,10 @@ function saveDecisions(file, decisions, confirm) {
     if (!node) throw new FeatureError('清单里没有功能「' + id + '」');
     if (d.include !== undefined) node.set('include', !!d.include);
     if (d.modeOverrides !== undefined) node.set('modeOverrides', d.modeOverrides);
+    if (d.preparation !== undefined) {
+      if (!node.get('preparation')) throw new FeatureError('不能通过选择新增准备写接口，请先核实清单');
+      for (const key of ['rehearsal', 'record']) if (d.preparation[key] !== undefined) node.setIn(['preparation', key], d.preparation[key]);
+    }
     if (d.writeMode !== undefined) {
       if (!WRITE_MODES.includes(d.writeMode)) throw new FeatureError('「' + id + '」writeMode 不合法：' + d.writeMode);
       node.set('writeMode', d.writeMode);
@@ -217,7 +236,8 @@ function mergeFresh(savedFile, freshFile) {
   const old = new Map(saved.features.map((f) => [f.id, f]));
   const added = [];
   const updated = [];
-  const definition = ({ include, writeMode, rehearsalMode, modeOverrides, submitRestriction, status, ...fields }) => fields;
+  const definition = ({ include, writeMode, rehearsalMode, modeOverrides, submitRestriction, status, preparation, ...fields }) => ({
+    ...fields, preparation: { description: preparation.description, requests: preparation.requests } });
   const features = fresh.features.map((f) => {
     const prev = old.get(f.id);
     if (!prev) {
@@ -229,6 +249,7 @@ function mergeFresh(savedFile, freshFile) {
     if (differs) updated.push(f.id);
     return Object.assign({}, f, { include: prev.include, writeMode: prev.writeMode, rehearsalMode: prev.rehearsalMode, modeOverrides: prev.modeOverrides,
       submitRestriction: prev.submitRestriction || f.submitRestriction,
+      preparation: { ...f.preparation, rehearsal: differs ? false : prev.preparation.rehearsal, record: differs ? false : prev.preparation.record },
       status: differs ? 'changed' : prev.status });
   });
   const freshIds = new Set(fresh.features.map((f) => f.id));
@@ -262,6 +283,7 @@ function mergeFresh(savedFile, freshFile) {
         o.modeOverrides = f.modeOverrides;
         if (f.rehearsalMode) o.rehearsalMode = f.rehearsalMode;
         if (f.writeRequests.length) o.writeRequests = f.writeRequests;
+        if (f.preparation.requests.length) o.preparation = f.preparation;
       }
       if (f.status) o.status = f.status;
       return o;

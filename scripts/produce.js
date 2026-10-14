@@ -110,8 +110,9 @@ if (Number(process.versions.node.split('.')[0]) < 20) {
   {
     console.log('\n==================== ' + tag('script') + '  校验脚本 ====================');
     try {
-      script = loadScript(SCRIPT_FILE);
-      rehearsalScript = loadScript(SCRIPT_FILE, { stage: 'rehearsal' });
+      const recordedUploads = has('post') ? JSON.parse(fs.readFileSync(path.join(OUT, 'pipeline.json'), 'utf8')).stages?.record?.uploads || [] : [];
+      script = loadScript(SCRIPT_FILE, { recordedUploads, stage: has('dry') ? 'rehearsal' : 'record' });
+      rehearsalScript = has('post') || has('dry') ? script : loadScript(SCRIPT_FILE, { stage: 'rehearsal' });
     } catch (e) {
       if (e.code === 'UNCONFIRMED') {
         fail('[待确认] ' + e.message + '\n  确认页：node app/server.js 后打开 http://127.0.0.1:7788/features?f='

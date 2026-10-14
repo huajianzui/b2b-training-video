@@ -16,14 +16,14 @@ async function until(fn, label) {
   while (Date.now() < deadline) { const value = await fn(); if (value) return value; await new Promise((r) => setTimeout(r, 50)); }
   throw new Error('测试未等到：' + label);
 }
-async function fixture(t, { rehearsal = 'submit', record = 'submit', badExpect = false, baseSave = false, narration = '', account = {} } = {}) {
+async function fixture(t, { rehearsal = 'submit', record = 'submit', badExpect = false, baseSave = false, narration = '', account = {}, upload = false } = {}) {
   if (!process.env.TEST_BROWSER_PATH) { t.skip('设置 TEST_BROWSER_PATH 后验证真实演练与录制'); return null; }
   const temp = fs.mkdtempSync(path.join(os.tmpdir(), 'training-execution-'));
   const root = path.join(temp, 'runtime'), out = path.join(root, 'output');
   fs.cpSync(scripts, root, { recursive: true, filter: (f) => !['node_modules', 'tests', 'output'].includes(path.basename(f)) });
   fs.symlinkSync(path.join(scripts, 'node_modules'), path.join(root, 'node_modules'), 'junction');
   fs.mkdirSync(out);
-  const state = { writes: 0, rows: new Set(), logins: 0, visits: 0 };
+  const state = { writes: 0, rows: new Set(), logins: 0, visits: 0, uploads: [], previews: 0 };
   const backend = http.createServer((req, res) => {
     state.visits++;
     if (req.url === '/timed') {
@@ -33,8 +33,13 @@ async function fixture(t, { rehearsal = 'submit', record = 'submit', badExpect =
       return;
     }
     if (req.url === '/save' && req.method === 'POST') {
+      if (upload && !state.uploads.length) { res.statusCode = 422; res.end('附件必填'); return; }
       state.writes++; state.rows.add('fixture-row'); res.end('保存成功'); return;
     }
+    if (req.url === '/upload' && req.method === 'POST') {
+      const parts = []; req.on('data', part => parts.push(part)); req.on('end', () => { state.uploads.push(Buffer.concat(parts)); res.end('上传完成'); }); return;
+    }
+    if (req.url === '/preview' && req.method === 'POST') { state.previews++; res.end('预检完成'); return; }
     if (req.url === '/query' && req.method === 'POST') { res.end('查询完成'); return; }
     if (req.url === '/login' && req.method === 'POST') { state.logins++; res.end('已登录'); return; }
     res.setHeader('Content-Type', 'text/html; charset=utf-8');
@@ -42,11 +47,15 @@ async function fixture(t, { rehearsal = 'submit', record = 'submit', badExpect =
       res.end(`<!doctype html><input id="user"><input id="pass" type="password"><button id="login" onclick="fetch('/login',{method:'POST'}).then(()=>document.body.innerHTML='<p id=done>已登录</p>')">登录</button>`
         + (req.url === '/unsafe-login' ? `<script>fetch('/save',{method:'POST'}).catch(()=>{});</script>` : '')); return;
     }
+    if (state.onPage) state.onPage();
     res.end(`<!doctype html><meta charset="utf-8"><title>写入回归</title>
 <button id="open" onclick="panel.hidden=false;result.textContent=''">新增</button>
 <section id="panel" hidden><label>名称<input id="name"></label>
+${upload ? `<input id="file" type="file" hidden onchange="const data=new FormData();data.append('file',this.files[0]);fetch('/upload',{method:'POST',body:data}).then(r=>r.text()).then(t=>result.textContent=t).catch(()=>result.textContent='上传被拦截')">
+<button id="preview" onclick="fetch('/preview',{method:'POST'}).then(r=>r.text()).then(t=>result.textContent=t)">预检</button>` : ''}
 <button id="save" onclick="fetch('/save',{method:'POST'}).then(r=>r.text()).then(t=>{result.textContent=t;panel.hidden=true}).catch(()=>result.textContent='请求被拦截')">保存</button>
-<button id="cancel" onclick="panel.hidden=true;result.textContent='取消完成'">取消</button></section><p id="result"></p>`);
+<button id="cancel" onclick="panel.hidden=true;result.textContent='取消完成'">取消</button></section><p id="result"></p>
+${upload ? `<script>const attachment=document.querySelector('#file');attachment.remove();setTimeout(()=>panel.appendChild(attachment),1000);</script>` : ''}`);
   });
   await new Promise((r) => backend.listen(0, '127.0.0.1', r));
   const url = 'http://127.0.0.1:' + backend.address().port;
@@ -94,6 +103,100 @@ pw.chromium.launch = (options) => launch({ ...options, executablePath: process.e
   const { openPipeline } = require(path.join(root, 'pipeline'));
   return { root, out, file, featureFile, state, base, token, start, wait, decide, status, emptyManifest, loadScript, executionHash, openPipeline };
 }
+
+function uploadScenario(f, { approved = true, mark = true } = {}) {
+  const source = path.join(f.root, 'prepared.txt'); fs.writeFileSync(source, '培训演示附件样本');
+  const file = require('../tools/files').add(f.root, 'fixture', source);
+  const features = YAML.parse(fs.readFileSync(f.featureFile, 'utf8'));
+  features.features[0].preparation = { description: '上传附件并写入预检记录', rehearsal: approved, record: approved,
+    requests: [{ method: 'POST', url: '/upload' }, { method: 'POST', url: '/preview' }] };
+  fs.writeFileSync(f.featureFile, YAML.stringify(features));
+  const doc = YAML.parse(fs.readFileSync(f.file, 'utf8'));
+  doc.scenes[0].actions.push({ upload: { target: { id: 'file' }, files: [path.relative(f.root, file)] }, prepare: mark, label: '附件' },
+    { waitFor: { text: '上传完成' }, prepare: mark }, { click: { id: 'preview' }, prepare: mark }, { waitFor: { text: '预检完成' }, prepare: mark });
+  fs.writeFileSync(f.file, YAML.stringify(doc)); return { file, source, doc };
+}
+
+test('必填附件未获准备许可时执行前拒绝，去掉标记也不能绕过请求拦截', { timeout: 60000 }, async t => {
+  const f = await fixture(t, { rehearsal: 'cancel', record: 'cancel', upload: true }); if (!f) return;
+  const sample = uploadScenario(f, { approved: false });
+  let result = await f.start('play.js', ['demo.yaml', '--dry']).done;
+  assert.notEqual(result.code, 0); assert.match(result.log, /尚未批准上传/); assert.equal(f.state.visits, 0);
+  for (const action of sample.doc.scenes[0].actions) delete action.prepare;
+  fs.writeFileSync(f.file, YAML.stringify(sample.doc));
+  result = await f.start('play.js', ['demo.yaml', '--dry']).done;
+  assert.notEqual(result.code, 0); assert.match(result.log, /未批准/);
+  assert.equal(f.state.uploads.length, 0); assert.equal(f.state.previews, 0); assert.equal(f.state.writes, 0);
+});
+
+test('取消收尾仍独立确认上传和预检，文件变化使旧确认失效，另一阶段许可不继承', { timeout: 60000 }, async t => {
+  const f = await fixture(t, { rehearsal: 'cancel', record: 'cancel', upload: true }); if (!f) return;
+  const sample = uploadScenario(f), original = fs.readFileSync(sample.file);
+  const features = YAML.parse(fs.readFileSync(f.featureFile, 'utf8')); features.features[0].preparation.record = false;
+  fs.writeFileSync(f.featureFile, YAML.stringify(features));
+  assert.throws(() => f.loadScript(f.file, { stage: 'record' }), /尚未批准上传/);
+  const pending = f.start('play.js', ['demo.yaml', '--dry', '--shots']), wait = await f.wait('rehearsal');
+  assert.match(wait.features[0].preparation, /预检/); assert.equal(f.state.uploads.length, 0);
+  fs.writeFileSync(sample.file, '确认前替换'); assert.equal((await f.decide(wait)).status, 409);
+  fs.writeFileSync(sample.file, original);
+  const browser = await chromium.launch({ executablePath: process.env.TEST_BROWSER_PATH }); t.after(() => browser.close());
+  const page = await browser.newPage({ viewport: { width: 1440, height: 900 } }); await page.goto(f.base + '/features?f=demo.features.yaml');
+  await page.locator('#dataWait').waitFor({ state: 'visible' });
+  assert.match(await page.locator('#dataSummary').innerText(), /上传附件并写入预检记录/);
+  assert.match(await page.locator('#dataSummary').innerText(), /取消/);
+  assert.match(await page.locator('#stat').innerText(), /准备写入：演练 1 \/ 录制 0/);
+  if (process.env.TEST_ARTIFACTS) { fs.mkdirSync(process.env.TEST_ARTIFACTS, { recursive: true }); await page.screenshot({ path: path.join(process.env.TEST_ARTIFACTS, 'upload-confirmation-1440.png'), fullPage: true }); }
+  await page.locator('#dataReady').check(); await page.locator('#btnData').click();
+  const result = await pending.done; assert.equal(result.code, 0, result.log);
+  assert.equal(f.state.uploads.length, 1); assert.ok(f.state.uploads[0].includes(original));
+  assert.equal(f.state.previews, 1); assert.equal(f.state.writes, 0);
+});
+
+test('准备许可不能用于最终保存；通过确认后替换附件也会在发送前停止', { timeout: 60000 }, async t => {
+  const f = await fixture(t, { rehearsal: 'cancel', record: 'cancel', upload: true }); if (!f) return;
+  const sample = uploadScenario(f), proper = YAML.stringify(sample.doc);
+  sample.doc.scenes[0].actions[4] = { click: { id: 'save' }, prepare: true }; fs.writeFileSync(f.file, YAML.stringify(sample.doc));
+  const pending = f.start('play.js', ['demo.yaml', '--dry']); assert.equal((await f.decide(await f.wait('rehearsal'))).status, 200);
+  const rejected = await pending.done; assert.notEqual(rejected.code, 0); assert.match(rejected.log, /未批准/); assert.equal(f.state.writes, 0);
+  fs.writeFileSync(f.file, proper); f.state.uploads.length = 0;
+  f.state.onPage = () => fs.writeFileSync(sample.file, '确认以后替换');
+  const next = f.start('play.js', ['demo.yaml', '--dry']); assert.equal((await f.decide(await f.wait('rehearsal'))).status, 200);
+  const changed = await next.done; assert.notEqual(changed.code, 0); assert.match(changed.log, /内容已变化/);
+  assert.equal(f.state.uploads.length, 0); assert.equal(f.state.writes, 0);
+});
+
+test('仅批准演练上传时校验、单项登录及 produce 演练手册可完成，正式入口仍拒绝', { timeout: 60000 }, async t => {
+  const f = await fixture(t, { rehearsal: 'cancel', record: 'cancel', upload: true }); if (!f) return;
+  uploadScenario(f);
+  const features = YAML.parse(fs.readFileSync(f.featureFile, 'utf8')); features.features[0].preparation.record = false;
+  fs.writeFileSync(f.featureFile, YAML.stringify(features));
+  for (const entry of ['script.js', 'login.js']) {
+    const result = await f.start(entry, ['demo.yaml', '--rehearsal']).done; assert.equal(result.code, 0, result.log);
+  }
+  assert.equal(f.state.visits, 0);
+  const dry = f.start('produce.js', ['demo.yaml', '--dry']); assert.equal((await f.decide(await f.wait('rehearsal'))).status, 200);
+  const result = await dry.done; assert.equal(result.code, 0, result.log); assert.equal(f.state.uploads.length, 1); assert.equal(f.state.writes, 0);
+  assert.ok(fs.statSync(path.join(f.out, '写入回归手册（演练）.docx')).size > 1000);
+  const visits = f.state.visits, record = await f.start('produce.js', ['demo.yaml']).done;
+  assert.notEqual(record.code, 0); assert.match(record.log, /尚未批准上传/); assert.equal(f.state.visits, visits);
+});
+
+for (const alias of ['absolute', 'cross-feature']) test('准备接口不能借用最终保存权限：' + alias, { timeout: 60000 }, async t => {
+  const f = await fixture(t, { rehearsal: 'cancel', record: 'cancel' }); if (!f) return;
+  const doc = YAML.parse(fs.readFileSync(f.file, 'utf8')), features = YAML.parse(fs.readFileSync(f.featureFile, 'utf8'));
+  features.features[0].submitRestriction = '最终提交禁止';
+  features.features[0].preparation = { description: '所谓准备动作', rehearsal: true, record: true,
+    requests: [{ method: 'POST', url: alias === 'absolute' ? doc.url + '/save' : '/{operation}' }] };
+  if (alias === 'cross-feature') {
+    features.features.push({ ...features.features[0], id: 'list.other', name: '禁止功能', include: false, preparation: undefined });
+    features.features[0].writeRequests = [{ method: 'POST', url: '/operations/final' }];
+  }
+  doc.scenes[0].actions.push({ click: { id: 'save' }, prepare: true });
+  fs.writeFileSync(f.featureFile, YAML.stringify(features)); fs.writeFileSync(f.file, YAML.stringify(doc));
+  const result = await f.start('play.js', ['demo.yaml', '--dry']).done;
+  assert.notEqual(result.code, 0); assert.match(result.log, /准备写入与最终提交路径相交/);
+  assert.equal(f.state.visits, 0); assert.equal(f.state.writes, 0); assert.equal((await f.status()).dataWait, null);
+});
 
 test('确认服务无需录制进程的凭据环境，仍能确认同一来源且不放行改过的脚本', { timeout: 60000 }, async (t) => {
   const f = await fixture(t); if (!f) return;
@@ -423,7 +526,7 @@ test('桌面确认页要求选择演练方式，并逐轮展示环境、功能�
   t.after(() => browser.close());
   const page = await browser.newPage({ viewport: { width: 1440, height: 900 } });
   await page.goto(f.base + '/features?f=demo.features.yaml');
-  await page.locator('select[data-key="rehearsalMode"]').waitFor();
+  await page.getByLabel('新增演练', { exact: true }).waitFor();
   assert.equal(await page.locator('#btnConfirm').isDisabled(), true);
   await page.getByLabel('新增演练', { exact: true }).selectOption('submit');
   await page.locator('#btnConfirm').click();
@@ -461,7 +564,7 @@ test('打开 A 清单时另一个终端运行 B，提交确认明确显示 B 并
   t.after(() => browser.close());
   const page = await browser.newPage({ viewport: { width: 1440, height: 900 } });
   await page.goto(f.base + '/features?f=demo.features.yaml');
-  await page.locator('select[data-key="rehearsalMode"]').waitFor();
+  await page.getByLabel('新增演练', { exact: true }).waitFor();
   const pending = f.start('play.js', ['other.yaml', '--dry']);
   const wait = await f.wait('rehearsal');
   await page.waitForFunction(() => document.querySelector('#dataSummary').textContent.includes('other.yaml'));
@@ -481,10 +584,12 @@ test('打开 A 清单时另一个终端运行 B，提交确认明确显示 B 并
 
 test('真实 produce 两轮确认、手册与纯后期更正不重放业务，超窗和操作变更明确拒绝', { timeout: 120000 }, async (t) => {
   if (!process.env.PYTHON) return t.skip('设置已安装 requirements.txt 的 PYTHON 后运行完整流水线');
-  const f = await fixture(t, { narration: '点击新增并填写名称。' }); if (!f) return;
+  const f = await fixture(t, { narration: '点击新增并填写名称。', upload: true }); if (!f) return;
+  uploadScenario(f);
   const doc = YAML.parse(fs.readFileSync(f.file, 'utf8'));
   doc.intro = { title: '开始演示', narration: '', duration: 1 };
   doc.outro = { title: '演示完成', narration: '', duration: 1 };
+  doc.scenes[0].actions[0].label = '旧按钮名称';
   fs.writeFileSync(f.file, YAML.stringify(doc));
   // 预置本地产生的静音音频缓存；真实 tts.py、录制与合成照常执行，不验证微软在线音色。
   const key = crypto.createHash('sha1').update('zh-CN-XiaoxiaoNeural|-6%|点击新增并填写名称。').digest('hex').slice(0, 16);
@@ -509,15 +614,22 @@ test('真实 produce 两轮确认、手册与纯后期更正不重放业务，�
   const manual = await f.start('manual.js', ['demo.yaml']).done; assert.equal(manual.code, 0, manual.log);
   assert.equal(f.state.writes, 2);
   const hash = name => crypto.createHash('sha256').update(fs.readFileSync(path.join(f.out, name))).digest('hex');
-  const raw = hash('raw.webm'), session = hash('session.json'), visits = f.state.visits;
+  const raw = hash('raw.webm'), session = hash('session.json'), material = hash('manual/record/steps.json'), visits = f.state.visits;
   doc.pronounce = { 名称: '明称' }; doc.scenes[0].doc = { text: '填写完成后点击保存。' };
+  doc.scenes[0].actions[0].label = '新按钮名称';
   fs.writeFileSync(f.file, YAML.stringify(doc));
   const updated = f.loadScript(f.file), spoken = updated.scenes[0].speech;
   const newKey = crypto.createHash('sha1').update(updated.voice + '|' + updated.rate + '|' + spoken).digest('hex').slice(0, 16);
   fs.copyFileSync(path.join(f.out, 'tts-cache', key + '.mp3'), path.join(f.out, 'tts-cache', newKey + '.mp3'));
+  assert.equal(f.state.uploads.length, 2); assert.equal(f.state.previews, 2);
+  assert.equal(require('../tools/files').cleanup(f.root, 'fixture').removed, 1);
   const post = await f.start('produce.js', ['demo.yaml', '--post']).done;
   assert.equal(post.code, 0, post.log); assert.equal(f.state.visits, visits); assert.equal(f.state.writes, 2);
   assert.equal(hash('raw.webm'), raw); assert.equal(hash('session.json'), session);
+  assert.equal(hash('manual/record/steps.json'), material);
+  const zip = await require('jszip').loadAsync(fs.readFileSync(path.join(f.out, '写入回归手册.docx')));
+  const document = await zip.file('word/document.xml').async('string');
+  assert.match(document, /新按钮名称/); assert.doesNotMatch(document, /旧按钮名称/);
   const final = hash('写入回归.mp4');
   const long = spawnSync(require('../deps').ffmpegPath(), ['-y', '-f', 'lavfi', '-i', 'anullsrc=r=24000:cl=mono', '-t', '20', path.join(f.out, 'tts-cache', newKey + '.mp3')], { encoding: 'utf8' });
   assert.equal(long.status, 0, long.stderr);

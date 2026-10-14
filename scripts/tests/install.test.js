@@ -25,7 +25,7 @@ test('首次安装复制工具，重复升级保留用户脚本、清单和产�
 });
 test('全新安装包含工作流要求的快照与 MP4 诊断工具，安装后的帮助可运行', (t) => {
   const f = fixture(t); installRuntime(scripts, f.target);
-  for (const rel of ['tools/snap.js', 'tools/mp4info.js']) {
+  for (const rel of ['tools/snap.js', 'tools/mp4info.js', 'tools/files.js', 'uploads.js', 'preflight.js', 'speech.py', 'app/bulk.js', 'prompts/files.md', 'prompts/production-brief.md']) {
     assert.equal(fs.readFileSync(path.join(f.target, rel), 'utf8'), fs.readFileSync(path.join(scripts, rel), 'utf8'));
   }
   const r = spawnSync(process.execPath, [path.join(f.target, 'tools/snap.js'), '--help'], {
