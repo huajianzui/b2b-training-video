@@ -113,7 +113,7 @@ function readLoginScript(file = 'script.yaml') {
  *
  * 兼容旧写法：mode="wait" 等价于 mode="manual" + start="manual"。
  */
-function normLogin(project) {
+function normLogin(project, { resolveCredentials = true } = {}) {
   const r = (project && project.login) || {};
   const raw = String(r.mode || '').toLowerCase();
 
@@ -146,8 +146,8 @@ function normLogin(project) {
     reuse: r.reuse !== false,
     timeoutSec: Math.max(20, Number(r.timeout || 300)),
     headless: r.headless === true,
-    username: expandEnv(r.username),
-    password: expandEnv(r.password),
+    username: resolveCredentials ? expandEnv(r.username) : String(r.username || ''),
+    password: resolveCredentials ? expandEnv(r.password) : String(r.password || ''),
     userSelector: r.usernameSelector || r.userSelector || '',
     passSelector: r.passwordSelector || r.passSelector || '',
     submitSelector: r.submitSelector || r.loginButton || '',

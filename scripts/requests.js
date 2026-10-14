@@ -55,7 +55,8 @@ function assertDisjoint(readOnly, writes) {
 
 const executionHash = (script) => crypto.createHash('sha256').update(JSON.stringify({
   source: script.source, url: script.url, executionStage: script.executionStage,
-  login: require('./login').normLogin(script),
+  // 确认服务无需持有录制进程的凭据；校验引用与配置，不能比较不同进程展开后的值。
+  login: require('./login').normLogin(script, { resolveCredentials: false }),
   scenes: script.scenes, readOnlyRequests: script.readOnlyRequests, safety: script.safety,
 })).digest('hex');
 
@@ -66,7 +67,10 @@ async function installRequestGuard(context, { readOnlyRequests = [], writeReques
   if (pageUrl && /^https?:/.test(pageUrl)) await context.grantPermissions(['local-network-access'], { origin: new URL(pageUrl).origin });
   const violations = [], writes = [];
   let grant = [], closing = false;
-  const describe = (method, value) => { const u = new URL(value); return method + ' ' + u.origin + u.pathname; };
+  const describe = (method, value) => {
+    const u = new URL(value), keys = [...new Set(u.searchParams.keys())].map(encodeURIComponent);
+    return method + ' ' + u.origin + u.pathname + (keys.length ? '?' + keys.map(k => k + '=<已隐藏>').join('&') : '');
+  };
   function blocked(method, url) {
     const message = '写入未批准或接口未声明：' + describe(method, url)
       + '；请核对 readOnlyRequests / writeRequests 和本阶段的提交确认';

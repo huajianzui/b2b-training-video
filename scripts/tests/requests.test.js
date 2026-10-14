@@ -135,6 +135,10 @@ test('未声明的 WebSocket 不连接服务器，只读连接仍可建立', { t
     socket.onopen = () => { socket.close(); r(true); }; socket.onclose = socket.onerror = () => r(false);
   }), route);
   assert.equal(await open('/write-socket'), false); assert.equal(f.counts.socket, 0);
+  assert.equal(await open('/read-socket?token=secret-value&v=1'), false);
+  assert.equal(f.counts.socket, 0);
+  assert.ok(f.guard.violations.some(message => message.includes('token') && message.includes('v')));
+  assert.ok(f.guard.violations.every(message => !message.includes('secret-value')));
   assert.equal(await open('/read-socket'), true, JSON.stringify({ counts: f.counts, violations: f.guard.violations, errors: f.errors })); assert.equal(f.counts.socket, 1);
   assert.throws(() => f.guard.assert(), /WS/);
 });

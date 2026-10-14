@@ -517,7 +517,9 @@ async function main() {
       const shift = (t) => Math.round((t - delta) * 1000) / 1000;
       for (const s of session.scenes) {
         // 录制器缺帧时可能只交付一秒占位视频；不能截成零时间并假报完成。
-        if (s.start - delta < 0) throw new Error('录制视频未覆盖场景 ' + s.id + '，请核对录制环境后重录。');
+        if (s.start - delta < 0) throw new Error('录制视频未覆盖场景 ' + s.id
+          + '（场景起点 ' + s.start.toFixed(3) + 's，运行终点 ' + stopAt.toFixed(3)
+          + 's，视频 ' + videoDur.toFixed(3) + 's），请核对录制环境后重录。');
         s.start = shift(s.start); s.audioAt = shift(s.audioAt); s.end = shift(s.end);
         // 各时间保留三位小数，比较允许两次取整合计的 2ms 误差。
         if (s.end + 0.002 < s.audioAt + ((durs[s.id] || 0) + CFG.tail) / 1000) {

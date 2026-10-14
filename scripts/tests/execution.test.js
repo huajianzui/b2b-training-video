@@ -95,6 +95,42 @@ pw.chromium.launch = (options) => launch({ ...options, executablePath: process.e
   return { root, out, file, featureFile, state, base, token, start, wait, decide, status, emptyManifest, loadScript, executionHash, openPipeline };
 }
 
+test('确认服务无需录制进程的凭据环境，仍能确认同一来源且不放行改过的脚本', { timeout: 60000 }, async (t) => {
+  const f = await fixture(t); if (!f) return;
+  const doc = YAML.parse(fs.readFileSync(f.file, 'utf8'));
+  doc.login = { enabled: true, mode: 'auto', start: 'auto', reuse: false, headless: true,
+    url: doc.url + '/login-screen', username: '${TRAINING_FIXTURE_USER}', password: '${TRAINING_FIXTURE_PASSWORD}',
+    usernameSelector: '#user', passwordSelector: '#pass', submitSelector: '#login', successSelector: '#done' };
+  fs.writeFileSync(f.file, YAML.stringify(doc));
+  const account = { TRAINING_FIXTURE_USER: 'fixture-user', TRAINING_FIXTURE_PASSWORD: crypto.randomBytes(16).toString('hex') };
+  const pending = f.start('play.js', ['demo.yaml', '--dry'], account), wait = await f.wait('rehearsal');
+  const original = fs.readFileSync(f.file, 'utf8');
+  doc.scenes[0].actions[1].fill.text = 'changed'; fs.writeFileSync(f.file, YAML.stringify(doc));
+  assert.equal((await f.decide(wait)).status, 409); assert.equal(f.state.writes, 0);
+  fs.writeFileSync(f.file, original);
+  const decision = await f.decide(wait); assert.equal(decision.status, 200, await decision.text());
+  const result = await pending.done; assert.equal(result.code, 0, result.log);
+  assert.equal(f.state.logins, 1); assert.equal(f.state.writes, 1);
+  assert.ok(!JSON.stringify(wait).includes(account.TRAINING_FIXTURE_PASSWORD));
+});
+
+test('确认请求明确失败后同一页面可再次点击，成功后禁止重复确认', { timeout: 60000 }, async (t) => {
+  const f = await fixture(t); if (!f) return;
+  const browser = await chromium.launch({ executablePath: process.env.TEST_BROWSER_PATH }); t.after(() => browser.close());
+  const page = await browser.newPage({ viewport: { width: 1440, height: 900 } });
+  const pending = f.start('play.js', ['demo.yaml', '--dry']); await f.wait('rehearsal');
+  await page.goto(f.base + '/features?f=demo.features.yaml');
+  await page.locator('#dataWait').waitFor({ state: 'visible' });
+  await page.route('**/api/data-confirm', route => route.fulfill({ status: 409, contentType: 'application/json', body: '{"error":"fixture retry"}' }), { times: 1 });
+  await page.locator('#dataReady').check(); await page.locator('#btnData').click();
+  await page.waitForFunction(() => document.querySelector('#msg').textContent.includes('fixture retry'));
+  await until(() => page.locator('#btnData').isEnabled(), '恢复确认按钮');
+  assert.equal(f.state.writes, 0);
+  await page.locator('#btnData').click();
+  const result = await pending.done; assert.equal(result.code, 0, result.log); assert.equal(f.state.writes, 1);
+  assert.equal(await page.locator('#btnData').isDisabled(), true);
+});
+
 test('已有有效 YAML、JSON 和 TTS 缓存时，play 帮助及拼错的演练参数仍不启动浏览器或操作页面', { timeout: 60000 }, async (t) => {
   const f = await fixture(t, { rehearsal: 'cancel', record: 'cancel' }); if (!f) return;
   f.emptyManifest();

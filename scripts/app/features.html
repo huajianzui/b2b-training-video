@@ -144,7 +144,7 @@ let file = new URLSearchParams(location.search).get('f') || '';
 let data = null;
 let dirty = false;
 let sessionToken = '';
-let currentWait = null, currentLogin = null, loginSent = '', busy = false;
+let currentWait = null, currentLogin = null, loginSent = '', dataSent = '', busy = false;
 
 async function api(url, body) {
   const r = await fetch(url, body ? { method: 'POST', headers: { 'Content-Type': 'application/json', 'X-Training-Token': sessionToken }, body: JSON.stringify(body) } : {});
@@ -339,6 +339,8 @@ async function pollStatus() {
     currentWait = status.dataWait;
     $('#dataWait').hidden = !currentWait;
     if (currentWait) {
+      $('#btnData').disabled = !$('#dataReady').checked || dataSent === currentWait.runId;
+      $('#btnCancelData').disabled = dataSent === currentWait.runId;
       $('#dataTitle').textContent = (currentWait.stage === 'rehearsal' ? '演练' : '正式录制') + '提交确认';
       $('#dataMismatch').hidden = !!data && data.scriptSource === currentWait.source;
       $('#dataMismatch').textContent = '注意：当前清单关联 ' + (data && data.script || '未配置脚本') + '；本次确认将授权下面显示的另一份脚本。';
@@ -357,13 +359,14 @@ $('#btnLogin').onclick = async () => {
   catch (e) { loginSent = ''; $('#msg').textContent = e.message; }
   await pollStatus();
 };
-$('#dataReady').onchange = () => { $('#btnData').disabled = !$('#dataReady').checked || !currentWait; };
+$('#dataReady').onchange = () => { $('#btnData').disabled = !$('#dataReady').checked || !currentWait || dataSent === currentWait.runId; };
 async function dataDecision(cancel) {
-  if (!currentWait) return;
+  if (!currentWait || dataSent === currentWait.runId) return;
   const { runId, input, stage } = currentWait;
-  $('#btnData').disabled = true;
+  dataSent = runId;
+  $('#btnData').disabled = $('#btnCancelData').disabled = true;
   try { await api('/api/data-confirm', { runId, input, stage, cancel }); $('#dataReady').checked = false; }
-  catch (e) { $('#msg').textContent = e.message; await pollStatus(); }
+  catch (e) { dataSent = ''; $('#msg').textContent = e.message; await pollStatus(); }
 }
 $('#btnData').onclick = () => dataDecision(false);
 $('#btnCancelData').onclick = () => dataDecision(true);
