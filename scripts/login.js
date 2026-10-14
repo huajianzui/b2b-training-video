@@ -18,18 +18,35 @@
  *   auto          → 判定登录成功就直接开录
  *
  * 用法（命令行）：
- *   node login.js                 按 project.json 的 login 配置执行一次
- *   node login.js --check         只验证现有登录态还有效吗，不登录
- *   node login.js --force         忽略已有登录态，强制重新登录
- *   node login.js --clear         删掉已保存的登录态
- *   node login.js --project x.json
+ *   node login.js [脚本.yaml]              默认按 script.yaml 的 login 配置执行一次
+ *   node login.js [脚本.yaml] --check      只验证现有登录态，不登录
+ *   node login.js [脚本.yaml] --force      忽略已有登录态，重新登录
+ *   node login.js [脚本.yaml] --clear      删除这份脚本指定的登录态
+ *   node login.js --project x.json         显式兼容旧 JSON，提示迁移到 YAML
  *
  * 用法（模块）：
  *   const { ensureLoggedIn } = require('./login');
- *   const auth = await ensureLoggedIn(project);
+ *   const { loadScript, asLoginProject } = require('./script');
+ *   const auth = await ensureLoggedIn(asLoginProject(loadScript('role.yaml')));
  *   // auth.enabled === false           → 不需要登录
  *   // auth.storageState = '<文件路径>' → 把这个路径传给 browser.newContext({ storageState })
  */
+
+const CLI = require.main === module ? require('./cli').readCli({
+  usage: '用法：node login.js [脚本.yaml] [--check | --force | --clear] [--rehearsal]\n'
+    + '  --rehearsal                          按演练阶段校验 YAML\n'
+    + '  --mode <manual|auto|none|wait|confirm>  临时覆盖登录方式\n'
+    + '  --start <manual|auto>                人工确认或自动判定登录成功\n'
+    + '  --project <旧配置.json>              显式兼容入口，请迁移到 YAML',
+  options: { check: { type: 'boolean' }, force: { type: 'boolean' }, clear: { type: 'boolean' },
+    project: { type: 'string' }, mode: { type: 'string' }, start: { type: 'string' }, rehearsal: { type: 'boolean' } },
+  validate: ({ values, positionals }) => {
+    if (values.project && positionals.length) throw new Error('YAML 和 --project 不能同时指定。');
+    if (['check', 'force', 'clear'].filter(name => values[name]).length > 1) throw new Error('--check、--force、--clear 不能同时使用。');
+    if (values.mode !== undefined && !['manual', 'auto', 'none', 'wait', 'confirm'].includes(values.mode)) throw new Error('--mode 值不合法。');
+    if (values.start !== undefined && !['manual', 'auto'].includes(values.start)) throw new Error('--start 值不合法。');
+  }
+}) : null;
 
 const path = require('path');
 const fs = require('fs');
@@ -49,7 +66,7 @@ const GO_FILE = path.join(HERE, 'output', '.login-go.json');       // 你：我�
 
 /**
  * 把 ${XXX} 换成环境变量。
- * 口令不建议明文写进 project.json —— 这个文件经常要发给同事或留在工程里，
+ * 口令不应明文写进 YAML 或旧 JSON —— 配置可能流转或留在工程里，
  * 写成 ${DEMO_PWD} 由环境变量注入，配置文件就可以放心流转。
  */
 function expandEnv(v) {
@@ -66,10 +83,16 @@ function absUrl(u, base) {
   return 'file:///' + abs.replace(/\\/g, '/');
 }
 
+/** 显式旧 JSON 兼容入口；新调用使用 readLoginScript。 */
 function readProject(file) {
   const p = path.resolve(HERE, file || 'project.json');
   if (!fs.existsSync(p)) throw new Error('找不到配置文件：' + p);
   return JSON.parse(fs.readFileSync(p, 'utf8').replace(/^\uFEFF/, ''));
+}
+
+function readLoginScript(file = 'script.yaml') {
+  const { loadScript, asLoginProject } = require('./script');
+  return asLoginProject(loadScript(path.resolve(HERE, file), { stage: CLI?.values.rehearsal ? 'rehearsal' : 'record' }));
 }
 
 /**
@@ -91,7 +114,7 @@ function readProject(file) {
  *
  * 兼容旧写法：mode="wait" 等价于 mode="manual" + start="manual"。
  */
-function normLogin(project) {
+function normLogin(project, { resolveCredentials = true } = {}) {
   const r = (project && project.login) || {};
   const raw = String(r.mode || '').toLowerCase();
 
@@ -124,8 +147,8 @@ function normLogin(project) {
     reuse: r.reuse !== false,
     timeoutSec: Math.max(20, Number(r.timeout || 300)),
     headless: r.headless === true,
-    username: expandEnv(r.username),
-    password: expandEnv(r.password),
+    username: resolveCredentials ? expandEnv(r.username) : String(r.username || ''),
+    password: resolveCredentials ? expandEnv(r.password) : String(r.password || ''),
     userSelector: r.usernameSelector || r.userSelector || '',
     passSelector: r.passwordSelector || r.passSelector || '',
     submitSelector: r.submitSelector || r.loginButton || '',
@@ -649,7 +672,7 @@ const defaultLog = (s) => console.log(s);
 /**
  * 保证"接下来这一刻是已登录的"。
  *
- * @param {object} project      project.json 的内容（留空则读 project.json）
+ * @param {object} project      asLoginProject(script) 的归一化登录配置（留空则读 script.yaml）
  * @param {object} opts
  *        opts.force   忽略已有登录态，强制重新登录
  *        opts.trust   信任已有登录态，跳过有效性验证（同一轮构建里前面刚验过，省几秒）
@@ -659,20 +682,21 @@ const defaultLog = (s) => console.log(s);
 async function ensureLoggedIn(project, opts = {}) {
   const log = opts.log || defaultLog;
 
-  // build.js --no-login 时统一走这条：本次构建完全不碰登录
+  // produce.js --no-login 时统一走这条。
   if (process.env.REC_NO_LOGIN === '1') {
     log('[登录] 本次构建按配置跳过了登录（--no-login）。');
     return { enabled: false, storageState: null, reused: false };
   }
 
-  const cfg = normLogin(project === undefined || project === null ? readProject(opts.projectFile) : project);
+  const cfg = normLogin(project === undefined || project === null
+    ? (opts.projectFile ? readProject(opts.projectFile) : readLoginScript(opts.scriptFile)) : project);
 
   if (!cfg.enabled) {
     return { enabled: false, storageState: null, reused: false };
   }
 
   if (!cfg.url) {
-    throw new Error('配置里启用了登录，但没有可用的地址（project.url 和 login.url 都是空的）。');
+    throw new Error('配置里启用了登录，但脚本 url 和 login.url 都是空的。');
   }
 
   log('[登录] 方式：' + describeLogin(cfg));
@@ -700,7 +724,7 @@ async function ensureLoggedIn(project, opts = {}) {
 
 /** 清掉已保存的登录态（换账号、或怀疑它坏了的时候用） */
 function clearAuth(project) {
-  const cfg = normLogin(project || readProject());
+  const cfg = normLogin(project || readLoginScript());
   if (fs.existsSync(cfg.storagePath)) {
     fs.unlinkSync(cfg.storagePath);
     return cfg.storagePath;
@@ -713,6 +737,7 @@ module.exports = {
   clearAuth,
   normLogin,
   readProject,
+  readLoginScript,
   describeLogin,
   WAIT_FILE,
   GO_FILE,
@@ -724,19 +749,15 @@ module.exports = {
 
 if (require.main === module) {
   (async () => {
-    const argv = process.argv.slice(2);
-    const pick = (name, def) => {
-      const i = argv.indexOf('--' + name);
-      return i >= 0 && argv[i + 1] && !argv[i + 1].startsWith('--') ? argv[i + 1] : def;
-    };
-
-    const project = readProject(pick('project', 'project.json'));
+    const { values, positionals } = CLI;
+    if (values.project) console.error('[迁移提示] --project 仅兼容旧 JSON；新调用使用 node login.js <脚本.yaml>。');
+    const project = values.project ? readProject(values.project) : readLoginScript(positionals[0]);
 
     // 命令行临时覆盖，不用动配置文件：
     //   --mode manual|auto|none   登录怎么完成
     //   --start manual|auto       什么时候开录（manual = 你点【开始录制】）
     const overrides = {};
-    const modeOverride = String(pick('mode', '')).toLowerCase();
+    const modeOverride = values.mode || '';
     if (modeOverride === 'wait' || modeOverride === 'confirm') {
       overrides.mode = 'manual';
       overrides.start = 'manual';
@@ -745,7 +766,7 @@ if (require.main === module) {
       overrides.mode = modeOverride;
       overrides.enabled = modeOverride !== 'none';
     }
-    const startOverride = String(pick('start', '')).toLowerCase();
+    const startOverride = values.start || '';
     if (startOverride === 'manual' || startOverride === 'auto') overrides.start = startOverride;
     if (Object.keys(overrides).length) {
       project.login = Object.assign({}, project.login || {}, overrides);
@@ -753,7 +774,7 @@ if (require.main === module) {
 
     const cfg = normLogin(project);
 
-    if (argv.includes('--clear')) {
+    if (values.clear) {
       const f = clearAuth(project);
       console.log(f ? '已删除登录态：' + path.relative(HERE, f) : '本来就没有保存登录态。');
       process.exit(0);
@@ -768,14 +789,14 @@ if (require.main === module) {
     console.log('登录方式：' + describeLogin(cfg) + '　地址 ' + cfg.url);
     console.log('登录态文件：' + path.relative(HERE, cfg.storagePath));
 
-    if (argv.includes('--check')) {
+    if (values.check) {
       const st = await validateAuth(cfg, defaultLog);
       const label = { in: '仍然有效', out: '已失效（会被弹回登录页）', unknown: '无法确认', missing: '还没有保存过' }[st];
       console.log('结论：' + label);
       process.exit(st === 'in' ? 0 : 2);
     }
 
-    const r = await ensureLoggedIn(project, { force: argv.includes('--force') });
+    const r = await ensureLoggedIn(project, { force: !!values.force });
     console.log(r.reused ? '完成：复用了已有的登录态。' : '完成：已登录并保存登录态。');
     process.exit(0);
   })().catch((e) => {

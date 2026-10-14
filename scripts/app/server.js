@@ -324,6 +324,9 @@ const server = http.createServer(async (req, res) => {
       const html = fs.readFileSync(path.join(__dirname, 'features.html'));
       return send(res, 200, html, 'text/html; charset=utf-8');
     }
+    if (p === '/bulk.js' && req.method === 'GET') {
+      return send(res, 200, fs.readFileSync(path.join(__dirname, 'bulk.js')), 'text/javascript; charset=utf-8');
+    }
 
     if (p === '/api/features/list') {
       return send(res, 200, JSON.stringify(listFeatureFiles()));

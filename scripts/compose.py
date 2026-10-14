@@ -61,7 +61,8 @@ def split_sentences(text):
             p = p[cut:].strip()
         if p:
             out.append(p)
-    return [re.sub(r"[，。；,;]$", "", s) for s in out]
+    cleaned = [re.sub(r"[，。；,;]$", "", s).strip() for s in out]
+    return [s for s in cleaned if s]
 
 
 def ts(sec):

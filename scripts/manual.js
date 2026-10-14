@@ -13,6 +13,13 @@
  *   node manual.js <脚本.yaml> [--rehearsal]
  */
 
+const CLI = require('./cli').readCli({
+  usage: '用法：node manual.js [脚本.yaml] [--rehearsal]\n'
+    + '  默认使用正式录制素材；--rehearsal 生成独立演练手册；--post 校验原录制来源后更正文案。',
+  options: { rehearsal: { type: 'boolean' }, post: { type: 'boolean' } },
+  validate: ({ values }) => { if (values.post && values.rehearsal) throw new Error('--post 只使用正式录制素材'); }
+});
+
 const fs = require('fs');
 const path = require('path');
 const { requireFrom } = require('./deps');
@@ -21,12 +28,12 @@ const { executionHash } = require('./requests');
 const { acquireLock } = require('./lock');
 const {
   Document, Packer, Paragraph, TextRun, ImageRun, Header, Footer, AlignmentType, LevelFormat,
-  HeadingLevel, BorderStyle, ShadingType, PageNumber, PageBreak, TableOfContents,
+  HeadingLevel, BorderStyle, ShadingType, PageNumber, TableOfContents, LineRuleType,
 } = requireFrom('docx');
 
 const HERE = __dirname;
 const OUT = path.join(HERE, 'output');
-const STAGE = process.argv.includes('--rehearsal') ? 'rehearsal' : 'record';
+const STAGE = CLI.values.rehearsal ? 'rehearsal' : 'record';
 const STEPS_JSON = path.join(OUT, 'manual', STAGE, 'steps.json');
 
 const FONT = { ascii: 'Microsoft YaHei', eastAsia: 'Microsoft YaHei', hAnsi: 'Microsoft YaHei', cs: 'Microsoft YaHei' };
@@ -51,6 +58,7 @@ function stepText(st) {
     }
     case 'fill': return '在' + N + '输入框中输入' + quote(st.text);
     case 'select': return '在' + N + '下拉框中选择' + quote(st.value);
+    case 'upload': return '选择' + (N || '需要上传的文件');
     case 'hover': return null;
     case 'waitFor': return null;
     case 'press': return '按下键盘' + bracket(st.key) + '键';
@@ -78,7 +86,7 @@ function resultText(expects) {
 
 const run = (text, opts = {}) => new TextRun(Object.assign({ text, font: FONT }, opts));
 const para = (text, opts = {}) => new Paragraph(Object.assign({ spacing: { after: 120, line: 360 }, children: [run(text)] }, opts));
-const heading = (text, level) => new Paragraph({ heading: level, children: [run(text)] });
+const heading = (text, level, opts = {}) => new Paragraph({ heading: level, keepNext: true, keepLines: true, children: [run(text)], ...opts });
 
 function image(file, caption, figNo) {
   const abs = path.join(HERE, file);
@@ -86,6 +94,7 @@ function image(file, caption, figNo) {
   return [
     new Paragraph({
       alignment: AlignmentType.CENTER,
+      keepNext: true,
       spacing: { before: 120, after: 60 },
       children: [new ImageRun({
         type: 'png',
@@ -96,6 +105,7 @@ function image(file, caption, figNo) {
     }),
     new Paragraph({
       alignment: AlignmentType.CENTER,
+      keepLines: true,
       spacing: { after: 240 },
       children: [run('图 ' + figNo + '  ' + caption, { size: 18, color: GREY })],
     }),
@@ -143,8 +153,7 @@ function build(script, material) {
 
   const body = [
     new TableOfContents('目录', { hyperlink: true, headingStyleRange: '1-2' }),
-    new Paragraph({ children: [new PageBreak()] }),
-    heading('1 概述', HeadingLevel.HEADING_1),
+    heading('1 概述', HeadingLevel.HEADING_1, { pageBreakBefore: true }),
   ];
   const overview = m.overview || (script.intro && script.intro.narration);
   if (overview) body.push(para(overview));
@@ -173,15 +182,18 @@ function build(script, material) {
       levels: [{ level: 0, format: LevelFormat.DECIMAL, text: '%1.', alignment: AlignmentType.LEFT,
         style: { paragraph: { indent: { left: 720, hanging: 360 } } } }],
     });
-    for (const st of mat.steps) {
+    for (const [index, originalStep] of mat.steps.entries()) {
+      // 操作顺序由来源校验固定；采用当前文案副本，不覆盖原始录制素材。
+      const st = { ...originalStep, label: scene.actions[index]?.label || '' };
       const text = stepText(st);
       if (!text) continue;
-      body.push(new Paragraph({ numbering: { reference: ref, level: 0 }, spacing: { before: 120, after: 60, line: 360 }, children: [run(text)] }));
+      body.push(new Paragraph({ numbering: { reference: ref, level: 0 }, keepLines: true, keepNext: !!st.shot,
+        spacing: { before: 120, after: 60, line: 360 }, children: [run(text)] }));
       if (st.shot) body.push(...image(st.shot, text, ++fig));
     }
 
     if (mat.result) {
-      body.push(new Paragraph({ spacing: { before: 120, after: 60, line: 360 },
+      body.push(new Paragraph({ keepLines: true, keepNext: !!mat.result.shot, spacing: { before: 120, after: 60, line: 360 },
         children: [run('操作结果：', { bold: true, color: ACCENT }), run(scene.doc.result || resultText(mat.result.expects))] }));
       body.push(...image(mat.result.shot, (scene.name || '') + '完成后的界面', ++fig));
     }
@@ -205,6 +217,10 @@ function build(script, material) {
     styles: {
       default: { document: { run: { font: FONT, size: 22 } } },
       paragraphStyles: [
+        // 显式控制中文目录行距，避免依赖 Word 本机目录样式撑出空白尾页。
+        ...[1, 2].map(level => ({ id: 'TOC' + level, name: 'TOC ' + level, basedOn: 'Normal',
+          run: { size: 22, font: FONT },
+          paragraph: { spacing: { before: 0, after: 0, line: 320, lineRule: LineRuleType.EXACT } } })),
         { id: 'Heading1', name: 'Heading 1', basedOn: 'Normal', next: 'Normal', quickFormat: true,
           run: { size: 32, bold: true, font: FONT },
           paragraph: { spacing: { before: 360, after: 240 }, outlineLevel: 0 } },
@@ -236,14 +252,16 @@ function build(script, material) {
 }
 
 async function main() {
-  const source = process.argv.slice(2).find((a) => !a.startsWith('--'))
+  const source = CLI.positionals[0]
     || (fs.existsSync(SCRIPT_JSON) && JSON.parse(fs.readFileSync(SCRIPT_JSON, 'utf8')).source);
   if (!source) throw new Error('缺少 YAML 来源；请运行 node manual.js <脚本.yaml>。');
-  const script = loadScript(path.resolve(HERE, source), { stage: STAGE });
+  const recordedUploads = CLI.values.post ? JSON.parse(fs.readFileSync(path.join(OUT, 'pipeline.json'), 'utf8')).stages?.record?.uploads || [] : [];
+  const script = loadScript(path.resolve(HERE, source), { stage: STAGE, recordedUploads });
   const release = acquireLock(OUT); process.once('exit', release);
   if (!fs.existsSync(STEPS_JSON)) throw new Error('缺少 ' + STAGE + ' 手册素材，请运行对应阶段的 play.js <脚本.yaml> --shots。');
   const material = JSON.parse(fs.readFileSync(STEPS_JSON, 'utf8'));
-  if (material.stage !== STAGE || material.input !== executionHash(script)) throw new Error('手册素材与当前脚本或执行阶段不匹配，请重新执行对应的 play.js --shots。');
+  const expected = CLI.values.post ? require('./pipeline').verifyCapture(OUT, script).execution : executionHash(script);
+  if (material.stage !== STAGE || material.input !== expected) throw new Error('手册素材与当前脚本或执行阶段不匹配，请重新执行对应的 play.js --shots。');
   for (const s of material.scenes) for (const shot of [...s.steps.map((st) => st.shot), s.result && s.result.shot].filter(Boolean)) {
     const full = path.resolve(HERE, shot), relative = path.relative(path.dirname(STEPS_JSON), full);
     if (relative.startsWith('..') || path.isAbsolute(relative) || !fs.existsSync(full)) throw new Error('手册截图缺失或不属于当前阶段：' + shot);

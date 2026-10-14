@@ -10,7 +10,7 @@
  *   generatedAt: 2026-10-09
  *   confirmedAt: ~                       确认页点「确认」后写入；为空时不允许出片
  *   environment:                         录制用的环境（出片前和用户确认）
- *     name: 本地开发环境                  旁白里会提到，如「当前是生产环境」
+ *     name: 本地开发环境                  仅供制作确认，不进入业务旁白
  *     testData: true                     用户是否允许写测试数据；每轮提交还要确认本轮数据准备
  *   pages:
  *     - id: list
@@ -35,6 +35,13 @@
  *       include: true                    是否演示（确认页回写；不写按默认规则）
  *       writeMode: cancel                写数据怎么处理：cancel 填完取消 | submit 真实提交（确认页回写；不写按 environment.testData 取默认）
  *       rehearsalMode: ~                 演练取消或提交，由用户单独选择；未选择不能执行写功能
+ *       modeOverrides: []                单项例外的阶段键；批量默认保留，明确覆盖才替换
+ *       submitRestriction: 禁止真实通知   固定禁止提交的原因；普通批量覆盖不可解除
+ *       preparation:                     上传/预检等提前发生的副作用，独立于最终提交
+ *         description: 选择文件即上传
+ *         rehearsal: false               用户明确批准才填 true
+ *         record: false
+ *         requests: [{method: POST, url: /api/uploads}]
  *       writeRequests: [{method: POST, url: /api/orders}]  实际写接口，来自业务代码
  *       status: new | changed | removed  改版后对比时标注，确认后清除
  *
@@ -44,10 +51,22 @@
  *   node features.js merge <已确认清单> <新盘点清单>   对比后写回已确认清单：新增的标 new，消失的标 removed
  */
 
+const CLI = require.main === module ? require('./cli').readCli({
+  usage: '用法：node features.js <清单.features.yaml> [--yes]\n'
+    + '      node features.js merge <已确认清单> <新清单>\n'
+    + '  --yes 仅记录用户已经明确批准的选择。',
+  options: { yes: { type: 'boolean' } }, maxPositionals: 3,
+  validate: ({ values, positionals }) => {
+    if (positionals[0] === 'merge') {
+      if (positionals.length !== 3 || values.yes) throw new Error('merge 需要两份清单且不能使用 --yes。');
+    } else if (positionals.length !== 1) throw new Error('只能指定一份功能清单；使用 --help 查看用法。');
+  }
+}) : null;
+
 const fs = require('fs');
 const path = require('path');
 const { requireFrom } = require('./deps');
-const { normalizeRequests } = require('./requests');
+const { normalizeRequests, assertDisjoint } = require('./requests');
 
 const KINDS = ['read', 'write'];
 const WRITE_MODES = ['cancel', 'submit'];
@@ -90,6 +109,19 @@ function normalize(raw, file) {
     const rehearsalMode = str(f.rehearsalMode);
     if (rehearsalMode && !WRITE_MODES.includes(rehearsalMode)) throw new FeatureError(w + '：rehearsalMode 只能是 cancel / submit');
     normalizeRequests(f.writeRequests, 'https://policy.invalid/', w + ' writeRequests');
+    const preparation = f.preparation || {};
+    const prepRequests = normalizeRequests(preparation.requests, 'https://policy.invalid/', w + ' preparation.requests');
+    if (prepRequests.length && (kind !== 'write' || !str(preparation.description))) throw new FeatureError(w + '：有准备写入须标为 write 并说明副作用');
+    for (const key of ['rehearsal', 'record']) if (preparation[key] !== undefined && typeof preparation[key] !== 'boolean') throw new FeatureError(w + '：准备阶段许可必须是布尔值');
+    if ((preparation.rehearsal || preparation.record) && (!prepRequests.length || !environment.testData)) throw new FeatureError(w + '：准备写入需要测试环境许可和精确接口');
+    assertDisjoint(prepRequests, normalizeRequests(f.writeRequests, 'https://policy.invalid/', w + ' writeRequests'),
+      { message: '准备写入与最终提交路径相交，请使用可区分的接口' });
+    const modeOverrides = f.modeOverrides === undefined
+      ? ['rehearsalMode', 'writeMode'].filter(k => Object.hasOwn(f, k) && f[k])
+      : f.modeOverrides;
+    if (!Array.isArray(modeOverrides) || modeOverrides.some(k => !['rehearsalMode', 'writeMode'].includes(k))) {
+      throw new FeatureError(w + '：modeOverrides 只能包含 rehearsalMode / writeMode');
+    }
     const blocked = str(f.blocked);
     const minor = !!f.minor;
     const shared = str(f.shared);
@@ -110,6 +142,10 @@ function normalize(raw, file) {
       include: f.include === undefined ? !blocked && !minor && !shared : !!f.include,
       writeMode,
       rehearsalMode,
+      modeOverrides: [...new Set(modeOverrides)],
+      submitRestriction: str(f.submitRestriction),
+      preparation: { description: str(preparation.description), rehearsal: preparation.rehearsal === true, record: preparation.record === true,
+        requests: (preparation.requests || []).map(r => ({ method: r.method.toUpperCase(), url: r.url })) },
       writeRequests: (f.writeRequests || []).map((r) => ({ method: r.method.toUpperCase(), url: r.url })),
       status: str(f.status),
     };
@@ -133,8 +169,10 @@ function loadFeatures(file) {
 
 function validateDecisions(manifest, { requireRehearsal = true } = {}) {
   for (const f of manifest.features.filter((f) => f.include && f.kind === 'write' && f.status !== 'removed')) {
+    if (f.blocked && (f.preparation.rehearsal || f.preparation.record)) throw new FeatureError('阻塞功能不能批准准备写入：' + f.name);
     if (requireRehearsal && !f.rehearsalMode) throw new FeatureError('功能「' + f.name + '」缺少 rehearsalMode：请在确认页单独选择演练取消或真实提交。');
     if (f.writeMode === 'submit' || f.rehearsalMode === 'submit') {
+      if (f.blocked || f.submitRestriction) throw new FeatureError('功能「' + f.name + '」不能 submit：' + (f.submitRestriction || f.blocked));
       if (!manifest.environment.testData) throw new FeatureError('环境不允许写测试数据（environment.testData 不是 true），功能「' + f.name + '」不能 submit。');
       if (!f.writeRequests.length) throw new FeatureError('功能「' + f.name + '」缺少 writeRequests：核对业务代码后填写真实提交接口，再重新确认。');
     }
@@ -154,6 +192,11 @@ function saveDecisions(file, decisions, confirm) {
     const node = findFeatureNode(doc, id);
     if (!node) throw new FeatureError('清单里没有功能「' + id + '」');
     if (d.include !== undefined) node.set('include', !!d.include);
+    if (d.modeOverrides !== undefined) node.set('modeOverrides', d.modeOverrides);
+    if (d.preparation !== undefined) {
+      if (!node.get('preparation')) throw new FeatureError('不能通过选择新增准备写接口，请先核实清单');
+      for (const key of ['rehearsal', 'record']) if (d.preparation[key] !== undefined) node.setIn(['preparation', key], d.preparation[key]);
+    }
     if (d.writeMode !== undefined) {
       if (!WRITE_MODES.includes(d.writeMode)) throw new FeatureError('「' + id + '」writeMode 不合法：' + d.writeMode);
       node.set('writeMode', d.writeMode);
@@ -193,16 +236,20 @@ function mergeFresh(savedFile, freshFile) {
   const old = new Map(saved.features.map((f) => [f.id, f]));
   const added = [];
   const updated = [];
-  const definition = ({ include, writeMode, rehearsalMode, status, ...fields }) => fields;
+  const definition = ({ include, writeMode, rehearsalMode, modeOverrides, submitRestriction, status, preparation, ...fields }) => ({
+    ...fields, preparation: { description: preparation.description, requests: preparation.requests } });
   const features = fresh.features.map((f) => {
     const prev = old.get(f.id);
     if (!prev) {
       added.push(f.id);
       return Object.assign({}, f, { status: 'new' });
     }
-    const differs = prev.status === 'removed' || JSON.stringify(definition(f)) !== JSON.stringify(definition(prev));
+    const differs = prev.status === 'removed' || (!prev.submitRestriction && !!f.submitRestriction)
+      || JSON.stringify(definition(f)) !== JSON.stringify(definition(prev));
     if (differs) updated.push(f.id);
-    return Object.assign({}, f, { include: prev.include, writeMode: prev.writeMode, rehearsalMode: prev.rehearsalMode,
+    return Object.assign({}, f, { include: prev.include, writeMode: prev.writeMode, rehearsalMode: prev.rehearsalMode, modeOverrides: prev.modeOverrides,
+      submitRestriction: prev.submitRestriction || f.submitRestriction,
+      preparation: { ...f.preparation, rehearsal: differs ? false : prev.preparation.rehearsal, record: differs ? false : prev.preparation.record },
       status: differs ? 'changed' : prev.status });
   });
   const freshIds = new Set(fresh.features.map((f) => f.id));
@@ -228,13 +275,15 @@ function mergeFresh(savedFile, freshFile) {
     }),
     features: features.map((f) => {
       const o = { id: f.id, page: f.page, name: f.name, kind: f.kind };
-      for (const k of ['desc', 'how', 'permission', 'when', 'requires', 'blocked', 'shared', 'source']) if (f[k]) o[k] = f[k];
+      for (const k of ['desc', 'how', 'permission', 'when', 'requires', 'blocked', 'shared', 'source', 'submitRestriction']) if (f[k]) o[k] = f[k];
       if (f.minor) o.minor = true;
       o.include = f.include;
       if (f.kind === 'write') {
         o.writeMode = f.writeMode;
+        o.modeOverrides = f.modeOverrides;
         if (f.rehearsalMode) o.rehearsalMode = f.rehearsalMode;
         if (f.writeRequests.length) o.writeRequests = f.writeRequests;
+        if (f.preparation.requests.length) o.preparation = f.preparation;
       }
       if (f.status) o.status = f.status;
       return o;
@@ -247,8 +296,7 @@ function mergeFresh(savedFile, freshFile) {
 module.exports = { loadFeatures, saveDecisions, validateDecisions, mergeFresh, FeatureError, WRITE_MODES };
 
 if (require.main === module) {
-  const argv = process.argv.slice(2);
-  const [cmd, a, b] = argv.filter((x) => !x.startsWith('--'));
+  const [cmd, a, b] = CLI.positionals;
   try {
     if (cmd === 'merge') {
       if (!a || !b) throw new FeatureError('用法：node features.js merge <已确认清单> <新盘点清单>');
@@ -264,7 +312,7 @@ if (require.main === module) {
     } else {
       if (!cmd) throw new FeatureError('用法：node features.js <清单> [--yes]');
       const file = path.resolve(cmd);
-      const f = argv.includes('--yes') ? saveDecisions(file, {}, true) : loadFeatures(file);
+      const f = CLI.values.yes ? saveDecisions(file, {}, true) : loadFeatures(file);
       const on = f.features.filter((x) => x.include);
       console.log(f.module + '：' + f.pages.length + ' 个页面，' + f.features.length + ' 个功能，勾选 ' + on.length + ' 个'
         + '（写数据 ' + on.filter((x) => x.kind === 'write').length + '）');

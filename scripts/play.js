@@ -16,6 +16,14 @@
  *   node play.js --dry --scenes 9-20   只演练第 9～20 个场景（也可写 12 或 9-），调脚本时用；正式录制不支持
  */
 
+const CLI = require('./cli').readCli({
+  usage: '用法：node play.js [脚本.yaml] [--dry] [--shots] [--headed]\n'
+    + '  --dry --scenes <9-20|9-|12>  只演练完整场景组，不截图\n'
+    + '  未指定 YAML 时仅使用缓存 JSON 记录的 YAML 来源；submit 仍需本轮用户确认。',
+  options: { dry: { type: 'boolean' }, shots: { type: 'boolean' }, headed: { type: 'boolean' }, scenes: { type: 'string' } },
+  validate: ({ values }) => sceneRange(values)
+});
+
 const fs = require('fs');
 const path = require('path');
 const { requireFrom } = require('./deps');
@@ -30,21 +38,23 @@ const { chromium } = requireFrom('playwright');
 
 const HERE = __dirname;
 const OUT = path.join(HERE, 'output');
-const DRY = process.argv.includes('--dry');
-const HEADED = process.argv.includes('--headed');
-const SHOTS = process.argv.includes('--shots');
+const DRY = !!CLI.values.dry;
+const HEADED = !!CLI.values.headed;
+const SHOTS = !!CLI.values.shots;
 const STAGE = DRY ? 'rehearsal' : 'record';
 const MATERIAL_DIR = path.join(OUT, 'manual', STAGE);
 const SHOT_DIR = path.join(MATERIAL_DIR, 'shots');
 
-function sceneRange() {
-  const i = process.argv.indexOf('--scenes');
-  if (i < 0) return null;
-  const m = /^(\d+)(-(\d*))?$/.exec(process.argv[i + 1] || '');
+function sceneRange(values = CLI.values) {
+  if (values.scenes === undefined) return null;
+  const m = /^(\d+)(-(\d*))?$/.exec(values.scenes);
   if (!m) throw new Error('--scenes 写成 9-20、9- 或 12');
-  if (!DRY || SHOTS) throw new Error('--scenes 只能用于不截图的演练（--dry）');
+  if (!values.dry || values.shots) throw new Error('--scenes 只能用于不截图的演练（--dry）');
   const from = Number(m[1]);
   const to = m[2] ? (m[3] ? Number(m[3]) : Infinity) : from;
+  if (!Number.isSafeInteger(from) || from < 1 || (to !== Infinity && (!Number.isSafeInteger(to) || to < from))) {
+    throw new Error('--scenes 从 1 开始，范围终点不能小于起点。');
+  }
   return (n) => n >= from && n <= to;
 }
 
@@ -105,7 +115,7 @@ const CURSOR_OVERLAY = `
 
 // ---------------------------------------------------------------- 定位
 
-function toLocator(page, c) {
+function toLocator(page, c, visible = true) {
   let loc;
   switch (c.by) {
     case undefined: loc = page.locator(c.selector); break;
@@ -118,7 +128,7 @@ function toLocator(page, c) {
     case 'text': loc = page.getByText(c.value, { exact: c.exact !== false }); break;
     default: throw new Error('未知定位方式：' + c.by);
   }
-  loc = loc.filter({ visible: true });
+  if (visible) loc = loc.filter({ visible: true });
   return c.nth !== undefined ? loc.nth(c.nth) : loc.first();
 }
 
@@ -245,6 +255,30 @@ async function runAction(ctx, adapters, a, notes, step) {
   };
 
   switch (a.op) {
+    case 'upload': {
+      const files = require('./uploads').payloads(a.files);
+      let input; const deadline = Date.now() + CFG.locateTimeout;
+      while (!input) {
+        for (const candidate of a.target) {
+          const target = toLocator(page, candidate, false);
+          if (!await target.count()) continue;
+          input = await target.evaluate(n => n.matches('input[type=file]')) ? target : target.locator('input[type=file]').first();
+          if (await input.count()) break;
+          input = null;
+        }
+        if (!input) {
+          if (Date.now() >= deadline) throw new Error('upload 未找到 input[type=file]，请核实真实控件');
+          await wait(200);
+        }
+      }
+      await input.setInputFiles(files);
+      if (SHOTS) {
+        const parent = input.locator('..');
+        const box = await parent.boundingBox();
+        step.shot = await cleanShot(page, path.join(SHOT_DIR, step.id + '.png'), box);
+      }
+      return a.label || '选择 ' + files.length + ' 个文件';
+    }
     case 'goto':
       // 场景开头的 goto 是为了能单独执行；已经在这一页时再刷新会让视频闪一下
       if (page.url() === a.url) return a.url + '（已在此页）';
@@ -348,8 +382,7 @@ async function captureFailure(page, scene) {
 // ---------------------------------------------------------------- 主流程
 
 async function main() {
-  const argv = process.argv.slice(2);
-  const source = argv.find((a, i) => !a.startsWith('--') && argv[i - 1] !== '--scenes')
+  const source = CLI.positionals[0]
     || (fs.existsSync(SCRIPT_JSON) && JSON.parse(fs.readFileSync(SCRIPT_JSON, 'utf8')).source);
   if (!source) throw new Error('缺少 YAML 来源；旧 JSON 不能作为执行输入，请运行 node play.js <脚本.yaml>。');
   const script = loadScript(path.resolve(HERE, source), { stage: STAGE });
@@ -393,7 +426,9 @@ async function main() {
   fs.rmSync(path.join(MATERIAL_DIR, 'steps.json'), { force: true });
   try {
     const auth = await ensureLoggedIn(asLoginProject(script), { force: !!process.env.REC_RELOGIN, trust: !!process.env.REC_TRUST_AUTH });
+    const confirmationStarted = Date.now();
     report.confirmation = await waitForData(script);
+    report.confirmationWaitMs = Date.now() - confirmationStarted;
     browser = await chromium.launch({ headless: !HEADED, args: ['--disable-blink-features=AutomationControlled'] });
     fs.rmSync(videoDir, { recursive: true, force: true });
     context = await browser.newContext({ viewport: CFG.viewport, deviceScaleFactor: 1, locale: 'zh-CN', serviceWorkers: 'block',
@@ -445,7 +480,7 @@ async function main() {
 
       for (const [i, a] of scene.actions.entries()) {
         if (i === scene.expectAt) await checkpoint(scene.expect);
-        if (i >= scene.expectAt && scene.writeMode === 'submit') guard.grant(scene.writeRequests);
+        guard.grant(a.prepare ? scene.preparationRequests : i >= scene.expectAt && scene.writeMode === 'submit' ? scene.writeRequests : []);
         const step = { id: scene.id + '-' + String(i + 1).padStart(2, '0'), op: a.op, label: a.label || '',
           text: a.text, value: a.value, key: a.key, url: a.url, y: a.y };
         doc.steps.push(step);
@@ -465,6 +500,8 @@ async function main() {
       guard.grant([]);
       for (const n of entry.notes) console.log('   ⚠ ' + n);
     } catch (err) {
+      // 异步上传被策略拒绝后，等待结果可能先超时；保留真正的请求阻塞原因。
+      try { guard.assert(); } catch (policyError) { err = policyError; }
       entry.status = 'failed';
       entry.error = err.message.split('\n')[0];
       entry.failure = await captureFailure(page, scene);
@@ -503,10 +540,20 @@ async function main() {
       fs.copyFileSync(await video.path(), raw);
       fs.rmSync(videoDir, { recursive: true, force: true });
       const videoDur = probeDuration(raw);
-      if (videoDur === null) throw new Error('读不到视频时长：' + raw);
+      if (!Number.isFinite(videoDur) || videoDur <= 0) throw new Error('读不到有效视频时长：' + raw);
       const delta = stopAt - videoDur;
-      const shift = (t) => Math.max(0, Math.round((t - delta) * 1000) / 1000);
-      for (const s of session.scenes) { s.start = shift(s.start); s.audioAt = shift(s.audioAt); s.end = shift(s.end); }
+      const shift = (t) => Math.round((t - delta) * 1000) / 1000;
+      for (const s of session.scenes) {
+        // 录制器缺帧时可能只交付一秒占位视频；不能截成零时间并假报完成。
+        if (s.start - delta < 0) throw new Error('录制视频未覆盖场景 ' + s.id
+          + '（场景起点 ' + s.start.toFixed(3) + 's，运行终点 ' + stopAt.toFixed(3)
+          + 's，视频 ' + videoDur.toFixed(3) + 's），请核对录制环境后重录。');
+        s.start = shift(s.start); s.audioAt = shift(s.audioAt); s.end = shift(s.end);
+        // 各时间保留三位小数，比较允许两次取整合计的 2ms 误差。
+        if (s.end + 0.002 < s.audioAt + ((durs[s.id] || 0) + CFG.tail) / 1000) {
+          throw new Error('录制视频未覆盖场景 ' + s.id + ' 的完整旁白与留白，请重录。');
+        }
+      }
       session.duration = videoDur; session.video = path.relative(HERE, raw);
       fs.writeFileSync(path.join(OUT, 'session.json'), JSON.stringify(session, null, 2), 'utf8');
       console.log('\n[完成] ' + session.video + '  时长 ' + videoDur.toFixed(1) + 's');
@@ -523,6 +570,7 @@ async function main() {
     report.recovery = '已有提交请求发出，数据可能已改变；核对响应和测试数据、复位或换用独立数据后，重新运行并确认。不会自动回滚。';
     console.error(report.recovery);
   }
+  report.finishedAt = new Date().toISOString();
   fs.writeFileSync(reportFile, JSON.stringify(report, null, 2), 'utf8');
   if (!report.ok) console.error('[失败] ' + report.failure.error + '；详情：output/run-report.json');
   process.exit(report.ok ? 0 : 2);

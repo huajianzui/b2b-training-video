@@ -15,7 +15,7 @@ const yaml = (extra = '') => `title: 示例\nurl: https://example.invalid\nlogin
 function fixture(t) {
   const temp = fs.mkdtempSync(path.join(os.tmpdir(), 'training-resume-'));
   const root = path.join(temp, 'runtime');
-  fs.cpSync(scripts, root, { recursive: true, filter: (file) => !['node_modules', 'output', 'tests', 'assets'].includes(path.basename(file)) });
+  fs.cpSync(scripts, root, { recursive: true, filter: (file) => !['node_modules', 'output', 'tests'].includes(path.basename(file)) });
   fs.mkdirSync(path.join(root, 'output'));
   fs.symlinkSync(path.join(scripts, 'node_modules'), path.join(root, 'node_modules'), 'junction');
   const file = path.join(root, 'demo.yaml');
@@ -87,7 +87,7 @@ test('背景音乐的新增、移除或内容变化不能直接复用原合成�
 });
 
 test('工具实现升级后，不能复用由旧演练、配音、录制或合成代码生成的阶段产物', (t) => {
-  for (const [file, from, stage] of [['play.js', 'tts', 'check'], ['requests.js', 'record', 'check'],
+  for (const [file, from, stage] of [['cli.js', 'record', 'check'], ['play.js', 'tts', 'check'], ['requests.js', 'record', 'check'],
     ['adapters/native.js', 'record', 'check'], ['tts.py', 'record', 'tts'], ['compose.py', 'cards', 'compose'], ['subtitles.py', 'cards', 'compose']]) {
     const f = fixture(t); seed(f);
     fs.appendFileSync(path.join(f.root, file), file.endsWith('.py') ? '\n# regression tool revision\n' : '\n// regression tool revision\n');

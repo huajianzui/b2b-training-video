@@ -1,9 +1,18 @@
 import unittest
 
 from subtitles import shift_srt
+from compose import build_srt, split_sentences
 
 
 class SubtitleTests(unittest.TestCase):
+    def test_punctuation_at_line_boundary_has_no_empty_cue(self):
+        for text in ["甲" * 22 + "。", "甲" * 44 + "；", "甲" * 22 + "。下一句。"]:
+            with self.subTest(text=text):
+                self.assertTrue(all(p.strip() for p in split_sentences(text)))
+                result = build_srt([(0, 5, text)])
+                self.assertTrue(shift_srt(result, 1))
+                self.assertNotIn("00:00:05,000 --> 00:00:05,000", result)
+
     def test_multiline_unicode_and_rollover_keep_caption_text(self):
         source = "1\r\n00:59:59,900 --> 01:00:00,500\r\n中文第一行\r\n第二行\r\n\r\n2\r\n01:00:01,000 --> 01:00:02,000\r\n下一句\r\n"
         shifted = shift_srt(source, 1.2344)
