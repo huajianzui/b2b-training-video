@@ -48,6 +48,15 @@ async function waitForData(script) {
     // 保留本轮决定到下一轮启动，拒绝已读到旧 WAIT 的并发确认请求。
   };
   process.once('exit', cleanup);
+  const autoApprove = process.env.TRAINING_VIDEO_AUTO_APPROVE === '1'
+    || process.argv.includes('--yes')
+    || process.argv.includes('--auto-approve');
+  if (autoApprove) {
+    try {
+      console.log('[自动放行] 已启用免打扰自动批准模式，直接放行本轮写入：' + current.stage);
+      return confirmData({ runId: current.runId, input: current.input, stage: current.stage });
+    } finally { cleanup(); process.removeListener('exit', cleanup); }
+  }
   console.log('[待确认] ' + (current.stage === 'rehearsal' ? '演练' : '正式录制') + '将真实提交：'
     + current.features.map((f) => f.name + (f.preparation ? '（准备写入：' + f.preparation + '）' : '')).join('、') + '\n  环境：' + current.environment + ' ' + current.url
     + '\n  请在本地确认页核对：数据已复位或本轮使用独立测试数据，再允许这一轮提交。');
