@@ -338,6 +338,15 @@ test('演练和录制两轮提交独立确认，旧确认不能放行新一轮�
   const dry = f.start('play.js', ['demo.yaml', '--dry', '--shots']);
   const first = await f.wait('rehearsal'); assert.equal(f.state.writes, 0);
   assert.equal((await f.decide(first)).status, 200); assert.equal((await f.decide(first)).status, 409);
+  await until(async () => !(await f.status()).dataWait, '确认已被执行器消费');
+  // 固定复现第二个请求读到旧等待记录、执行器随后清理记录的跨进程交错。
+  const confirmation = require(path.join(f.root, 'confirmation'));
+  const exists = fs.existsSync, read = fs.readFileSync;
+  fs.existsSync = (file) => file === confirmation.WAIT_FILE || exists(file);
+  fs.readFileSync = (file, ...args) => file === confirmation.WAIT_FILE ? JSON.stringify(first) : read(file, ...args);
+  try {
+    assert.throws(() => confirmation.confirmData(first), /已经确认|已失效/, '消费后的同一轮确认必须拒绝，不能再次返回成功');
+  } finally { fs.existsSync = exists; fs.readFileSync = read; }
   const rehearsal = await dry.done; assert.equal(rehearsal.code, 0, rehearsal.log); assert.equal(f.state.writes, 1);
   assert.equal((await f.status()).dataWait, null);
   f.emptyManifest();
@@ -630,6 +639,27 @@ test('真实 produce 两轮确认、手册与纯后期更正不重放业务，�
   const zip = await require('jszip').loadAsync(fs.readFileSync(path.join(f.out, '写入回归手册.docx')));
   const document = await zip.file('word/document.xml').async('string');
   assert.match(document, /新按钮名称/); assert.doesNotMatch(document, /旧按钮名称/);
+  // 实际 Word 曾把步骤留在前页、截图放到后页；验证每组文字—图—图注的分页约束。
+  const paragraphs = document.match(/<w:p\b[^>]*>[\s\S]*?<\/w:p>/g);
+  const headings = paragraphs.filter(p => /<w:pStyle w:val="Heading[12]"/.test(p));
+  assert.ok(headings.length > 0);
+  for (const p of headings) assert.match(p, /<w:keepNext\b/, '标题不能孤立留在上一页');
+  assert.match(headings[0], /<w:pageBreakBefore\b/, '正文应在段前分页，目录满页时不能多出空白页');
+  assert.doesNotMatch(document, /<w:br w:type="page"/, '不能用可挤到新页的空段落插入分页');
+  const styles = await zip.file('word/styles.xml').async('string');
+  for (const level of [1, 2]) {
+    const tocStyle = styles.match(new RegExp('<w:style[^>]*w:styleId="TOC' + level + '"[\\s\\S]*?</w:style>'))?.[0];
+    assert.ok(tocStyle, '目录样式必须显式定义，不依赖本机 Word 默认值');
+    assert.match(tocStyle, /w:line="320" w:lineRule="exact"/);
+  }
+  const pictures = paragraphs.flatMap((p, i) => p.includes('<w:drawing>') ? [i] : []);
+  assert.ok(pictures.length > 0);
+  for (const i of pictures) {
+    assert.match(paragraphs[i - 1], /<w:keepNext\b/, '截图前的步骤或结果须与截图同页');
+    assert.match(paragraphs[i], /<w:keepNext\b/, '截图须与图注同页');
+    assert.match(paragraphs[i + 1], /<w:keepLines\b/, '长图注不能跨页拆分');
+    assert.doesNotMatch(paragraphs[i + 1], /<w:keepNext\b/, '不同截图组不得串成无法分页的长链');
+  }
   const final = hash('写入回归.mp4');
   const long = spawnSync(require('../deps').ffmpegPath(), ['-y', '-f', 'lavfi', '-i', 'anullsrc=r=24000:cl=mono', '-t', '20', path.join(f.out, 'tts-cache', newKey + '.mp3')], { encoding: 'utf8' });
   assert.equal(long.status, 0, long.stderr);

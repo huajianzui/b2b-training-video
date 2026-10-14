@@ -45,7 +45,7 @@ async function waitForData(script) {
   fs.writeFileSync(WAIT_FILE, JSON.stringify(current, null, 2), 'utf8');
   const cleanup = () => {
     if (fs.existsSync(WAIT_FILE) && JSON.parse(fs.readFileSync(WAIT_FILE, 'utf8')).runId === current.runId) fs.rmSync(WAIT_FILE);
-    if (fs.existsSync(GO_FILE) && JSON.parse(fs.readFileSync(GO_FILE, 'utf8')).runId === current.runId) fs.rmSync(GO_FILE);
+    // 保留本轮决定到下一轮启动，拒绝已读到旧 WAIT 的并发确认请求。
   };
   process.once('exit', cleanup);
   console.log('[待确认] ' + (current.stage === 'rehearsal' ? '演练' : '正式录制') + '将真实提交：'

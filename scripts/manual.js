@@ -28,7 +28,7 @@ const { executionHash } = require('./requests');
 const { acquireLock } = require('./lock');
 const {
   Document, Packer, Paragraph, TextRun, ImageRun, Header, Footer, AlignmentType, LevelFormat,
-  HeadingLevel, BorderStyle, ShadingType, PageNumber, PageBreak, TableOfContents,
+  HeadingLevel, BorderStyle, ShadingType, PageNumber, TableOfContents, LineRuleType,
 } = requireFrom('docx');
 
 const HERE = __dirname;
@@ -86,7 +86,7 @@ function resultText(expects) {
 
 const run = (text, opts = {}) => new TextRun(Object.assign({ text, font: FONT }, opts));
 const para = (text, opts = {}) => new Paragraph(Object.assign({ spacing: { after: 120, line: 360 }, children: [run(text)] }, opts));
-const heading = (text, level) => new Paragraph({ heading: level, children: [run(text)] });
+const heading = (text, level, opts = {}) => new Paragraph({ heading: level, keepNext: true, keepLines: true, children: [run(text)], ...opts });
 
 function image(file, caption, figNo) {
   const abs = path.join(HERE, file);
@@ -94,6 +94,7 @@ function image(file, caption, figNo) {
   return [
     new Paragraph({
       alignment: AlignmentType.CENTER,
+      keepNext: true,
       spacing: { before: 120, after: 60 },
       children: [new ImageRun({
         type: 'png',
@@ -104,6 +105,7 @@ function image(file, caption, figNo) {
     }),
     new Paragraph({
       alignment: AlignmentType.CENTER,
+      keepLines: true,
       spacing: { after: 240 },
       children: [run('图 ' + figNo + '  ' + caption, { size: 18, color: GREY })],
     }),
@@ -151,8 +153,7 @@ function build(script, material) {
 
   const body = [
     new TableOfContents('目录', { hyperlink: true, headingStyleRange: '1-2' }),
-    new Paragraph({ children: [new PageBreak()] }),
-    heading('1 概述', HeadingLevel.HEADING_1),
+    heading('1 概述', HeadingLevel.HEADING_1, { pageBreakBefore: true }),
   ];
   const overview = m.overview || (script.intro && script.intro.narration);
   if (overview) body.push(para(overview));
@@ -186,12 +187,13 @@ function build(script, material) {
       const st = { ...originalStep, label: scene.actions[index]?.label || '' };
       const text = stepText(st);
       if (!text) continue;
-      body.push(new Paragraph({ numbering: { reference: ref, level: 0 }, spacing: { before: 120, after: 60, line: 360 }, children: [run(text)] }));
+      body.push(new Paragraph({ numbering: { reference: ref, level: 0 }, keepLines: true, keepNext: !!st.shot,
+        spacing: { before: 120, after: 60, line: 360 }, children: [run(text)] }));
       if (st.shot) body.push(...image(st.shot, text, ++fig));
     }
 
     if (mat.result) {
-      body.push(new Paragraph({ spacing: { before: 120, after: 60, line: 360 },
+      body.push(new Paragraph({ keepLines: true, keepNext: !!mat.result.shot, spacing: { before: 120, after: 60, line: 360 },
         children: [run('操作结果：', { bold: true, color: ACCENT }), run(scene.doc.result || resultText(mat.result.expects))] }));
       body.push(...image(mat.result.shot, (scene.name || '') + '完成后的界面', ++fig));
     }
@@ -215,6 +217,10 @@ function build(script, material) {
     styles: {
       default: { document: { run: { font: FONT, size: 22 } } },
       paragraphStyles: [
+        // 显式控制中文目录行距，避免依赖 Word 本机目录样式撑出空白尾页。
+        ...[1, 2].map(level => ({ id: 'TOC' + level, name: 'TOC ' + level, basedOn: 'Normal',
+          run: { size: 22, font: FONT },
+          paragraph: { spacing: { before: 0, after: 0, line: 320, lineRule: LineRuleType.EXACT } } })),
         { id: 'Heading1', name: 'Heading 1', basedOn: 'Normal', next: 'Normal', quickFormat: true,
           run: { size: 32, bold: true, font: FONT },
           paragraph: { spacing: { before: 360, after: 240 }, outlineLevel: 0 } },
