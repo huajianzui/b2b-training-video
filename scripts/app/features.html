@@ -124,6 +124,7 @@
     <button data-pick="none">全不选</button>
   </div>
   <pre id="log"></pre>
+  <div id="globalBulk"></div>
   <div id="pages"><div class="empty">加载中…</div></div>
 </main>
 
@@ -135,6 +136,7 @@
   <button class="primary" id="btnProduce" disabled>出片</button>
 </footer>
 
+<script src="/bulk.js"></script>
 <script>
 const $ = (s) => document.querySelector(s);
 const esc = (s) => String(s == null ? '' : s).replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
@@ -193,12 +195,13 @@ function sceneCell(f) {
 function render() {
   $('#module').textContent = data.module + (data.generatedBy ? ' · 盘点：' + data.generatedBy + (data.generatedAt ? '（' + data.generatedAt + '）' : '') : '');
   $('#bar').style.display = '';
+  $('#globalBulk').innerHTML = bulkBar('', '全部已选功能');
   $('#environment').textContent = '环境：' + (data.environment.name || '未命名') + ' · '
     + (data.environment.testData ? '允许写入测试数据（每轮提交前再次确认）' : '不允许写入测试数据，仅可取消');
   const rows = data.pages.map((p) => {
     const feats = data.features.filter((f) => f.page === p.id);
     if (!feats.length) return '';
-    return '<section class="page"><h2>' + esc(p.name) + '<small>' + esc(p.entry || p.route) + '</small></h2>'
+    return '<section class="page"><h2>' + esc(p.name) + '<small>' + esc(p.entry || p.route) + '</small></h2>' + bulkBar(p.id, p.name)
       + '<div class="table-wrap"><table><thead><tr><th></th><th>功能</th><th style="width:190px">演练 / 正式录制</th><th style="width:260px">条件与前提</th><th style="width:150px">脚本场景</th></tr></thead><tbody>'
       + feats.map((f) => {
         const tags = '<span class="tag ' + f.kind + '">' + (f.kind === 'write' ? '写数据' : '只读') + '</span>'
@@ -209,7 +212,7 @@ function render() {
           + '" data-key="' + key + '"' + (f.include && !busy ? '' : ' disabled') + '>'
           + (key === 'rehearsalMode' ? '<option value="">请确认演练方式</option>' : '')
           + Object.entries(MODE).map(([k, v]) => '<option value="' + k + '"' + (f[key] === k ? ' selected' : '')
-            + (k === 'submit' && !data.environment.testData ? ' disabled' : '') + '>' + v + '</option>').join('') + '</select>';
+            + (k === 'submit' && (!data.environment.testData || f.blocked || f.submitRestriction) ? ' disabled' : '') + '>' + v + '</option>').join('') + '</select>';
         const mode = f.kind === 'write' ? choice('rehearsalMode', '演练') + choice('writeMode', '正式录制') : '<span class="meta">—</span>';
         const meta = [
           f.permission && '权限：' + esc(f.permission),
@@ -225,7 +228,9 @@ function render() {
           + (f.desc ? '<div class="desc">' + esc(f.desc) + '</div>' : '')
           + (f.how ? '<div class="desc">演示方式：' + esc(f.how) + '</div>' : '')
           + (f.blocked ? '<div class="blocked">⚠ ' + esc(f.blocked) + '</div>' : '') + '</td>'
-          + '<td>' + mode + '</td><td class="meta">' + meta + '</td><td>' + sceneCell(f) + '</td></tr>';
+          + '<td>' + mode + (f.submitRestriction ? '<div class="blocked">禁止提交：' + esc(f.submitRestriction) + '</div>' : '')
+          + (f.modeOverrides.length ? '<div class="meta">单项例外：' + f.modeOverrides.map(k => k === 'rehearsalMode' ? '演练' : '录制').join('、') + '</div>' : '')
+          + '</td><td class="meta">' + meta + '</td><td>' + sceneCell(f) + '</td></tr>';
       }).join('')
       + '</tbody></table></div></section>';
   }).join('');
@@ -235,12 +240,31 @@ function render() {
     feat(el.dataset.id).include = el.checked; dirty = true; render();
   }; });
   document.querySelectorAll('select[data-mode]').forEach((el) => { el.onchange = () => {
-    feat(el.dataset.mode)[el.dataset.key] = el.value; dirty = true; render();
+    const f = feat(el.dataset.mode); f[el.dataset.key] = el.value;
+    f.modeOverrides = [...new Set([...f.modeOverrides, el.dataset.key])]; dirty = true; render();
+  }; });
+  document.querySelectorAll('[data-bulk]').forEach(bar => { bar.querySelector('button').onclick = () => {
+    const values = Object.fromEntries([...bar.querySelectorAll('select')].filter(el => el.value).map(el => [el.dataset.key, el.value]));
+    if (!Object.keys(values).length) { $('#msg').textContent = '先选择要批量设置的阶段与方式'; return; }
+    const changed = TrainingBulk.apply(data.features, { page: bar.dataset.bulk, values,
+      override: bar.querySelector('input').checked, testData: data.environment.testData });
+    dirty = true; render(); $('#msg').textContent = '已更新 ' + changed.length + ' 项；单项例外与固定禁止提交限制按上方设置保留，请确认清单';
   }; });
   renderState();
 }
 
 const feat = (id) => data.features.find((f) => f.id === id);
+function bulkBar(page, title) {
+  const fs = data.features.filter(f => TrainingBulk.eligible(f, page));
+  if (!fs.length) return '';
+  const summary = key => ['submit', 'cancel', ''].map(mode => (mode === 'submit' ? '提交' : mode === 'cancel' ? '取消' : '未选')
+    + ' ' + fs.filter(f => (f[key] || '') === mode).length).join(' / ');
+  return '<div class="bar" style="flex-wrap:wrap" data-bulk="' + esc(page) + '"><strong>' + esc(title) + ' · 批量设置</strong>'
+    + TrainingBulk.keys.map((key, i) => '<label>' + (i ? '录制' : '演练') + ' <select data-key="' + key + '" aria-label="' + esc(title) + (i ? '批量录制' : '批量演练') + '">'
+      + '<option value="">保持当前</option><option value="cancel">取消</option><option value="submit"' + (data.environment.testData ? '' : ' disabled') + '>提交</option></select></label>').join('')
+    + '<label><input type="checkbox">覆盖单项例外</label><button>应用本组</button>'
+    + '<span class="meta">演练：' + summary('rehearsalMode') + '；录制：' + summary('writeMode') + '。固定禁止提交项不随覆盖改变。</span></div>';
+}
 
 function renderState() {
   const on = data.features.filter((f) => f.include);
@@ -266,8 +290,9 @@ function renderState() {
   $('#btnSave').disabled = busy;
   $('#fileSel').disabled = busy;
   document.querySelectorAll('[data-pick]').forEach((b) => { b.disabled = busy; });
+  document.querySelectorAll('[data-bulk] select, [data-bulk] input, [data-bulk] button').forEach(el => { el.disabled = busy; });
   let msg = '';
-  if (undecided) msg = '请为每个写数据功能单独选择演练方式，再确认清单';
+  if (undecided) msg = '可先按全部或小模块批量设置两轮方式，再调整单项例外并确认清单';
   else if (!data.scriptFound) msg = '清单没有关联演示脚本（script 字段），确认后还不能出片';
   else if (data.scriptError) msg = '读取演示脚本出错：' + data.scriptError;
   else if (!confirmed) msg = '勾选要演示的功能后点「确认清单」，确认后才能出片';
@@ -278,7 +303,7 @@ function renderState() {
 
 function decisions() {
   const d = {};
-  for (const f of data.features) d[f.id] = { include: f.include, writeMode: f.writeMode, rehearsalMode: f.rehearsalMode };
+  for (const f of data.features) d[f.id] = { include: f.include, writeMode: f.writeMode, rehearsalMode: f.rehearsalMode, modeOverrides: f.modeOverrides };
   return d;
 }
 
@@ -286,7 +311,7 @@ async function save(confirmIt) {
   try {
     const fresh = await api('/api/features?f=' + encodeURIComponent(file), { decisions: decisions(), confirm: confirmIt });
     await load(fresh);
-    $('#msg').textContent = confirmIt ? '已确认，可以出片' : '草稿已保存';
+    if (!confirmIt) $('#msg').textContent = '草稿已保存';
   } catch (e) {
     $('#msg').textContent = '保存失败：' + e.message;
   }

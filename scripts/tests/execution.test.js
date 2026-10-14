@@ -131,6 +131,14 @@ test('确认请求明确失败后同一页面可再次点击，成功后禁止�
   assert.equal(await page.locator('#btnData').isDisabled(), true);
 });
 
+test('完整生产缺少媒体依赖时在登录和任何业务操作之前停止', { timeout: 60000 }, async (t) => {
+  if (!process.env.PYTHON) return t.skip('设置 PYTHON 后运行前置依赖回归');
+  const f = await fixture(t); if (!f) return;
+  const result = await f.start('produce.js', ['demo.yaml'], { FFMPEG: path.join(f.root, 'missing-ffmpeg.exe') }).done;
+  assert.notEqual(result.code, 0); assert.match(result.log, /前置检查失败/);
+  assert.equal(f.state.visits, 0); assert.equal(f.state.writes, 0); assert.equal((await f.status()).dataWait, null);
+});
+
 test('已有有效 YAML、JSON 和 TTS 缓存时，play 帮助及拼错的演练参数仍不启动浏览器或操作页面', { timeout: 60000 }, async (t) => {
   const f = await fixture(t, { rehearsal: 'cancel', record: 'cancel' }); if (!f) return;
   f.emptyManifest();
@@ -375,6 +383,37 @@ test('桌面清单重新确认后，非 TTY 人工登录按钮继续任务且不
   const result = await pending.done; assert.equal(result.code, 0, result.log); assert.equal(f.state.writes, 1);
 });
 
+test('桌面批量设置可按模块应用并保留单项例外，保存后仍受固定禁止限制', { timeout: 60000 }, async (t) => {
+  const f = await fixture(t); if (!f) return;
+  const config = YAML.parse(fs.readFileSync(f.featureFile, 'utf8'));
+  config.confirmedAt = null;
+  config.features[0].modeOverrides = []; config.features[0].rehearsalMode = '';
+  config.features.push({ ...config.features[0], id: 'list.apply', name: '申请', writeMode: 'cancel', rehearsalMode: 'cancel', submitRestriction: '禁止通知' });
+  fs.writeFileSync(f.featureFile, YAML.stringify(config));
+  const browser = await chromium.launch({ executablePath: process.env.TEST_BROWSER_PATH }); t.after(() => browser.close());
+  const page = await browser.newPage({ viewport: { width: 1440, height: 900 } });
+  await page.goto(f.base + '/features?f=demo.features.yaml');
+  const group = page.locator('[data-bulk="list"]');
+  await group.locator('[data-key="rehearsalMode"]').selectOption('submit');
+  await group.locator('[data-key="writeMode"]').selectOption('submit');
+  await group.getByRole('button', { name: '应用本组' }).click();
+  assert.equal(await page.getByLabel('新增演练', { exact: true }).inputValue(), 'submit');
+  assert.equal(await page.getByLabel('申请正式录制', { exact: true }).inputValue(), 'cancel');
+  await page.getByLabel('新增正式录制', { exact: true }).selectOption('cancel');
+  const global = page.locator('[data-bulk=""]');
+  await global.locator('[data-key="writeMode"]').selectOption('submit'); await global.getByRole('button').click();
+  assert.equal(await page.getByLabel('新增正式录制', { exact: true }).inputValue(), 'cancel');
+  await page.locator('#btnConfirm').click();
+  await page.waitForFunction(() => document.querySelector('#state').textContent.startsWith('已确认'));
+  const saved = YAML.parse(fs.readFileSync(f.featureFile, 'utf8'));
+  assert.equal(saved.features[0].writeMode, 'cancel'); assert.ok(saved.features[0].modeOverrides.includes('writeMode'));
+  assert.equal(saved.features[1].writeMode, 'cancel');
+  if (process.env.TEST_ARTIFACTS) {
+    fs.mkdirSync(process.env.TEST_ARTIFACTS, { recursive: true });
+    await page.screenshot({ path: path.join(process.env.TEST_ARTIFACTS, 'bulk-confirmation-1440.png'), fullPage: true });
+  }
+});
+
 test('桌面确认页要求选择演练方式，并逐轮展示环境、功能和数据确认', { timeout: 60000 }, async (t) => {
   const f = await fixture(t); if (!f) return;
   const config = YAML.parse(fs.readFileSync(f.featureFile, 'utf8'));
@@ -440,7 +479,7 @@ test('打开 A 清单时另一个终端运行 B，提交确认明确显示 B 并
   assert.equal(report.confirmation.source, path.join(f.root, 'other.yaml'));
 });
 
-test('真实 produce 流水线两轮确认后完成录制、正式手册、合成和片头片尾，manual 续跑只复用正式素材', { timeout: 60000 }, async (t) => {
+test('真实 produce 两轮确认、手册与纯后期更正不重放业务，超窗和操作变更明确拒绝', { timeout: 120000 }, async (t) => {
   if (!process.env.PYTHON) return t.skip('设置已安装 requirements.txt 的 PYTHON 后运行完整流水线');
   const f = await fixture(t, { narration: '点击新增并填写名称。' }); if (!f) return;
   const doc = YAML.parse(fs.readFileSync(f.file, 'utf8'));
@@ -469,4 +508,23 @@ test('真实 produce 流水线两轮确认后完成录制、正式手册、合�
   p.requireStage('record', ['manual/record/steps.json']);
   const manual = await f.start('manual.js', ['demo.yaml']).done; assert.equal(manual.code, 0, manual.log);
   assert.equal(f.state.writes, 2);
+  const hash = name => crypto.createHash('sha256').update(fs.readFileSync(path.join(f.out, name))).digest('hex');
+  const raw = hash('raw.webm'), session = hash('session.json'), visits = f.state.visits;
+  doc.pronounce = { 名称: '明称' }; doc.scenes[0].doc = { text: '填写完成后点击保存。' };
+  fs.writeFileSync(f.file, YAML.stringify(doc));
+  const updated = f.loadScript(f.file), spoken = updated.scenes[0].speech;
+  const newKey = crypto.createHash('sha1').update(updated.voice + '|' + updated.rate + '|' + spoken).digest('hex').slice(0, 16);
+  fs.copyFileSync(path.join(f.out, 'tts-cache', key + '.mp3'), path.join(f.out, 'tts-cache', newKey + '.mp3'));
+  const post = await f.start('produce.js', ['demo.yaml', '--post']).done;
+  assert.equal(post.code, 0, post.log); assert.equal(f.state.visits, visits); assert.equal(f.state.writes, 2);
+  assert.equal(hash('raw.webm'), raw); assert.equal(hash('session.json'), session);
+  const final = hash('写入回归.mp4');
+  const long = spawnSync(require('../deps').ffmpegPath(), ['-y', '-f', 'lavfi', '-i', 'anullsrc=r=24000:cl=mono', '-t', '20', path.join(f.out, 'tts-cache', newKey + '.mp3')], { encoding: 'utf8' });
+  assert.equal(long.status, 0, long.stderr);
+  const oversized = await f.start('produce.js', ['demo.yaml', '--post']).done;
+  assert.notEqual(oversized.code, 0); assert.match(oversized.log, /时间窗/);
+  assert.equal(f.state.visits, visits); assert.equal(hash('写入回归.mp4'), final); assert.equal(hash('raw.webm'), raw);
+  doc.scenes[0].actions[1].fill.text = 'changed operation'; fs.writeFileSync(f.file, YAML.stringify(doc));
+  const changed = await f.start('produce.js', ['demo.yaml', '--post']).done;
+  assert.notEqual(changed.code, 0); assert.match(changed.log, /操作.*改变/); assert.equal(f.state.visits, visits);
 });

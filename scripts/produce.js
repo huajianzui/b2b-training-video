@@ -20,10 +20,11 @@
 
 const argv = process.argv.slice(2);
 const VALUED = new Set(['--from', '--bgm']);
-const SWITCHES = new Set(['--dry', '--no-manual', '--skip-check', '--relogin', '--no-login', '--no-cards', '--headed', '--allow-uncovered']);
+const SWITCHES = new Set(['--dry', '--post', '--no-manual', '--skip-check', '--relogin', '--no-login', '--no-cards', '--headed', '--allow-uncovered']);
 if (argv.includes('--help') || argv.includes('-h')) {
   console.log(`用法：node produce.js [script.yaml] [选项]
   --dry                 只校验、演练及生成演练手册
+  --post                纯后期：只更正文案/配音/手册，不登录、演练或重录
   --from <环节>         从 script / login / check / tts / record / manual / compose / verify / cards 开始
   --bgm <音频文件>      合成背景音乐；变化后从 compose 重跑
   --no-manual           不生成手册
@@ -53,46 +54,13 @@ const path = require('path');
 const { loadScript, asLoginProject, DEFAULT_OUT: SCRIPT_JSON } = require('./script');
 const { ensureLoggedIn } = require('./login');
 const { ffmpegPath } = require('./deps');
-const { STEPS, openPipeline, acquireLock, manualArtifacts } = require('./pipeline');
+const { STEPS, openPipeline, acquireLock, manualArtifacts, checkAudioWindows } = require('./pipeline');
 const { executionHash } = require('./requests');
 
 const HERE = __dirname;
 const OUT = path.join(HERE, 'output');
 const NODE = process.execPath;
-// 很多 Windows 机器上 python 指向 2.x，或有多个 3.x 只有一个装了 edge-tts：挑第一个能用的，换成它的真实路径
-function findPython() {
-  const candidates = [[process.env.PYTHON], ['py', '-3'], ['python3'], ['python']].filter(([cmd]) => cmd);
-  const probe = 'import sys;print(sys.version_info[0]);print(sys.executable);import edge_tts';
-  let bare = '';
-  for (const [cmd, ...pre] of candidates) {
-    const r = spawnSync(cmd, [...pre, '-c', probe], { encoding: 'utf8' });
-    const [major, exe] = (r.stdout || '').trim().split(/\r?\n/);
-    if (Number(major) < 3 || !exe) continue;
-    if (r.status === 0) return exe.trim();
-    bare = bare || exe.trim();
-  }
-  console.error(bare
-    ? '[produce] Python 3（' + bare + '）没有装 edge-tts：运行 "' + bare + '" -m pip install -r requirements.txt'
-    : '[produce] 找不到 Python 3（试过 PYTHON 环境变量、py -3、python3、python）。装好后重试，或设置 PYTHON 指向 python.exe。');
-  process.exit(1);
-}
-
-// 字幕和片头片尾用 assets/ 下的微软雅黑；没有就从 Windows 字体目录复制
-const FONTS = ['msyh.ttc', 'msyhbd.ttc'];
-function ensureFonts() {
-  const dir = path.join(HERE, 'assets');
-  const sys = path.join(process.env.WINDIR || 'C:/Windows', 'Fonts');
-  for (const f of FONTS) {
-    const dst = path.join(dir, f);
-    if (fs.existsSync(dst)) continue;
-    if (!fs.existsSync(path.join(sys, f))) {
-      fail('缺少字体 assets/' + f + '：把任一中文字体（如 Noto Sans CJK）复制到 ' + dir + ' 并改名为 ' + FONTS.join('、'));
-    }
-    fs.mkdirSync(dir, { recursive: true });
-    fs.copyFileSync(path.join(sys, f), dst);
-    console.log('[produce] 已从系统字体目录复制 ' + f + ' 到 assets/');
-  }
-}
+const { preflight, findPython, ensureFonts } = require('./preflight');
 let pyExe;
 const PY = () => (pyExe = pyExe || findPython());
 
@@ -105,7 +73,8 @@ const SCRIPT_FILE = path.resolve(HERE, scriptArg || 'script.yaml');
 const BGM = val('bgm') ? path.resolve(HERE, val('bgm')) : null;
 
 const MANUAL = !has('no-manual');
-const FROM = val('from') || 'script';
+if (has('post') && ['dry', 'relogin', 'headed', 'skip-check', 'allow-uncovered'].some(has) || has('post') && val('from')) fail('--post 不能与演练/录制或 --from 选项混用。');
+const FROM = has('post') ? 'tts' : val('from') || 'script';
 if (!STEPS.includes(FROM)) fail('未知环节：' + FROM + '（可选：' + STEPS.join(' / ') + '）');
 const should = (s) => STEPS.indexOf(s) >= STEPS.indexOf(FROM);
 const tag = (s) => (STEPS.indexOf(s) + 1) + '/' + STEPS.length;
@@ -116,6 +85,7 @@ function fail(msg) {
 }
 
 function run(label, cmd, args, env) {
+  const started = Date.now();
   console.log('\n==================== ' + label + ' ====================');
   const r = spawnSync(cmd, args, {
     cwd: HERE,
@@ -125,6 +95,8 @@ function run(label, cmd, args, env) {
     }, env || {}),
   });
   if (r.error) fail('无法启动：' + r.error.message);
+  fs.appendFileSync(path.join(OUT, 'timing.jsonl'), JSON.stringify({ stage: label, at: new Date(started).toISOString(),
+    elapsedMs: Date.now() - started, exitCode: r.status }) + '\n', 'utf8');
   return r.status;
 }
 
@@ -172,8 +144,18 @@ if (Number(process.versions.node.split('.')[0]) < 20) {
   const release = acquireLock(OUT);
   process.once('exit', release);
   for (const [signal, code] of [['SIGINT', 130], ['SIGTERM', 143]]) process.once(signal, () => process.exit(code));
-  const pipeline = openPipeline(OUT, script, FROM, { manual: MANUAL, skipCheck: has('skip-check'), bgm: BGM });
+  const pipeline = openPipeline(OUT, script, FROM, { manual: MANUAL, skipCheck: has('skip-check'), bgm: BGM, post: has('post') });
   fs.writeFileSync(SCRIPT_JSON, JSON.stringify(script, null, 2), 'utf8');
+
+  if (!has('dry')) {
+    await preflight({ browser: should('record') && !has('post'), python: PY() });
+    if (should('tts')) {
+      if (run('前置配音：合成旁白', PY(), [path.join(HERE, 'tts.py')]) !== 0) fail('旁白合成失败，尚未进入业务演练。');
+      const manifest = JSON.parse(fs.readFileSync(path.join(OUT, 'tts', 'manifest.json'), 'utf8'));
+      const clips = Object.values(manifest.scenes).map(m => path.relative(OUT, path.resolve(HERE, m.file)));
+      pipeline.complete('tts', ['tts/manifest.json', ...clips]);
+    }
+  }
 
   const env = { ...release.env };
   if (has('no-login')) {
@@ -188,7 +170,7 @@ if (Number(process.versions.node.split('.')[0]) < 20) {
     }
     env.REC_TRUST_AUTH = '1';
   }
-  if (!should('login') && (has('relogin') || pipeline.authChanged)) env.REC_RELOGIN = '1';
+  if (!has('post') && !should('login') && (has('relogin') || pipeline.authChanged)) env.REC_RELOGIN = '1';
 
   if (should('check') && !has('skip-check')) {
     const args = [path.join(HERE, 'play.js'), SCRIPT_FILE, '--dry'];
@@ -211,16 +193,8 @@ if (Number(process.versions.node.split('.')[0]) < 20) {
     process.exit(0);
   }
 
-  if (should('tts') && run(tag('tts') + '  合成旁白（先于录制，决定每个场景的时长）', PY(), [path.join(HERE, 'tts.py')]) !== 0) {
-    fail('旁白合成失败。');
-  }
-  if (should('tts')) {
-    const manifest = JSON.parse(fs.readFileSync(path.join(OUT, 'tts', 'manifest.json'), 'utf8'));
-    const clips = Object.values(manifest.scenes).map((m) => path.relative(OUT, path.resolve(HERE, m.file)));
-    pipeline.complete('tts', ['tts/manifest.json', ...clips]);
-  }
-
-  if (should('record')) {
+  if (has('post')) checkAudioWindows(OUT, script);
+  if (should('record') && !has('post')) {
     const args = [path.join(HERE, 'play.js'), SCRIPT_FILE];
     if (MANUAL) args.push('--shots');
     if (has('headed')) args.push('--headed');
@@ -232,7 +206,7 @@ if (Number(process.versions.node.split('.')[0]) < 20) {
 
   if (should('manual') && MANUAL) {
     pipeline.requireStage('record', ['manual/record/steps.json']);
-    if (run(tag('manual') + '  生成正式操作手册（Word）', NODE, [path.join(HERE, 'manual.js'), SCRIPT_FILE], env) !== 0) fail('手册生成失败。');
+    if (run(tag('manual') + '  生成正式操作手册（Word）', NODE, [path.join(HERE, 'manual.js'), SCRIPT_FILE, ...(has('post') ? ['--post'] : [])], env) !== 0) fail('手册生成失败。');
     pipeline.complete('manual', [script.manual.title.replace(/[\\/:*?"<>|]/g, '_').trim() + '.docx']);
   }
 

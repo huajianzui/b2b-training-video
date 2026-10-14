@@ -165,14 +165,15 @@ def check_fonts():
 # ---------------------------------------------------------------- 卡片合成
 
 async def synth_tts(text, out_path, voice, rate, volume, pitch):
-    import edge_tts
+    from speech import communicator, reject_forbidden
 
     for attempt in range(3):
         try:
-            c = edge_tts.Communicate(text, voice, rate=rate, volume=volume, pitch=pitch)
+            c = communicator(text, voice, rate=rate, volume=volume, pitch=pitch)
             await c.save(str(out_path))
             return
         except Exception as e:
+            reject_forbidden(e)
             if attempt == 2:
                 raise
             print("  配音合成重试（" + e.__class__.__name__ + "）")

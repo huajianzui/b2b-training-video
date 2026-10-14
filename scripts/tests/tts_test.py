@@ -1,5 +1,25 @@
 import subprocess
 import unittest
+import tempfile
+from pathlib import Path
+from unittest.mock import AsyncMock, patch
+from tts import synth
+
+
+class HandshakeTests(unittest.IsolatedAsyncioTestCase):
+    async def test_forbidden_stops_without_retries_or_partial_audio(self):
+        error = Exception("private query must not appear")
+        error.status = 403
+        fake = AsyncMock()
+        fake.save.side_effect = error
+        with tempfile.TemporaryDirectory(prefix="training-tts-unit-") as directory:
+            target = Path(directory) / "voice.mp3"
+            with patch("speech.communicator", return_value=fake):
+                with self.assertRaisesRegex(RuntimeError, "拒绝握手"):
+                    await synth("固定测试", target, "voice", "-6%")
+            self.assertEqual(fake.save.await_count, 1)
+            self.assertFalse(target.exists())
+            self.assertFalse(target.with_suffix(".part").exists())
 from unittest.mock import patch
 
 import tts

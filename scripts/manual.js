@@ -15,8 +15,9 @@
 
 const CLI = require('./cli').readCli({
   usage: '用法：node manual.js [脚本.yaml] [--rehearsal]\n'
-    + '  默认使用正式录制素材；--rehearsal 生成独立演练手册。',
-  options: { rehearsal: { type: 'boolean' } }
+    + '  默认使用正式录制素材；--rehearsal 生成独立演练手册；--post 校验原录制来源后更正文案。',
+  options: { rehearsal: { type: 'boolean' }, post: { type: 'boolean' } },
+  validate: ({ values }) => { if (values.post && values.rehearsal) throw new Error('--post 只使用正式录制素材'); }
 });
 
 const fs = require('fs');
@@ -249,7 +250,8 @@ async function main() {
   const release = acquireLock(OUT); process.once('exit', release);
   if (!fs.existsSync(STEPS_JSON)) throw new Error('缺少 ' + STAGE + ' 手册素材，请运行对应阶段的 play.js <脚本.yaml> --shots。');
   const material = JSON.parse(fs.readFileSync(STEPS_JSON, 'utf8'));
-  if (material.stage !== STAGE || material.input !== executionHash(script)) throw new Error('手册素材与当前脚本或执行阶段不匹配，请重新执行对应的 play.js --shots。');
+  const expected = CLI.values.post ? require('./pipeline').verifyCapture(OUT, script).execution : executionHash(script);
+  if (material.stage !== STAGE || material.input !== expected) throw new Error('手册素材与当前脚本或执行阶段不匹配，请重新执行对应的 play.js --shots。');
   for (const s of material.scenes) for (const shot of [...s.steps.map((st) => st.shot), s.result && s.result.shot].filter(Boolean)) {
     const full = path.resolve(HERE, shot), relative = path.relative(path.dirname(STEPS_JSON), full);
     if (relative.startsWith('..') || path.isAbsolute(relative) || !fs.existsSync(full)) throw new Error('手册截图缺失或不属于当前阶段：' + shot);

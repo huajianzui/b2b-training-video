@@ -12,6 +12,7 @@
 """
 
 import asyncio
+import argparse
 import hashlib
 import json
 import os
@@ -40,15 +41,17 @@ def duration_of(path):
 
 
 async def synth(text, target, voice, rate):
-    import edge_tts
+    from speech import communicator, reject_forbidden
     tmp = target.with_suffix(".part")
     tries = 6
     for attempt in range(tries):
         try:
-            await edge_tts.Communicate(text, voice, rate=rate).save(str(tmp))
+            await communicator(text, voice, rate=rate).save(str(tmp))
             tmp.replace(target)
             return
         except Exception as e:
+            tmp.unlink(missing_ok=True)
+            reject_forbidden(e)
             if attempt == tries - 1:
                 raise
             print(f"    重试（{e.__class__.__name__}）")
@@ -87,4 +90,13 @@ async def main():
 
 
 if __name__ == "__main__":
-    asyncio.run(main())
+    ap = argparse.ArgumentParser(description="合成旁白；--probe 仅发送固定连通性测试句")
+    ap.add_argument("--probe", type=Path)
+    args = ap.parse_args()
+    if args.probe:
+        asyncio.run(synth("语音连通性测试。", args.probe, "zh-CN-XiaoxiaoNeural", "-6%"))
+        if duration_of(args.probe) is None:
+            sys.exit("语音探测文件不能完整解码")
+        print("在线语音探测通过")
+    else:
+        asyncio.run(main())

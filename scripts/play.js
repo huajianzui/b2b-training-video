@@ -402,7 +402,9 @@ async function main() {
   fs.rmSync(path.join(MATERIAL_DIR, 'steps.json'), { force: true });
   try {
     const auth = await ensureLoggedIn(asLoginProject(script), { force: !!process.env.REC_RELOGIN, trust: !!process.env.REC_TRUST_AUTH });
+    const confirmationStarted = Date.now();
     report.confirmation = await waitForData(script);
+    report.confirmationWaitMs = Date.now() - confirmationStarted;
     browser = await chromium.launch({ headless: !HEADED, args: ['--disable-blink-features=AutomationControlled'] });
     fs.rmSync(videoDir, { recursive: true, force: true });
     context = await browser.newContext({ viewport: CFG.viewport, deviceScaleFactor: 1, locale: 'zh-CN', serviceWorkers: 'block',
@@ -542,6 +544,7 @@ async function main() {
     report.recovery = '已有提交请求发出，数据可能已改变；核对响应和测试数据、复位或换用独立数据后，重新运行并确认。不会自动回滚。';
     console.error(report.recovery);
   }
+  report.finishedAt = new Date().toISOString();
   fs.writeFileSync(reportFile, JSON.stringify(report, null, 2), 'utf8');
   if (!report.ok) console.error('[失败] ' + report.failure.error + '；详情：output/run-report.json');
   process.exit(report.ok ? 0 : 2);
