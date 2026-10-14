@@ -16,6 +16,11 @@ function normalizeRequests(raw, base, where, { readOnly = false } = {}) {
     try { url = new URL(r.url, base); } catch { throw new Error(where + ' URL 不合法：' + r.url); }
     if (!(method === 'WS' ? ['ws:', 'wss:'] : ['http:', 'https:']).includes(url.protocol)
       || url.username || url.password || url.hash) throw new Error(where + ' URL 必须是无凭据、无片段的 HTTP(S) 或 WS 地址');
+    for (const [key, value] of url.searchParams) {
+      if ((key + value).includes('${') && (method !== 'WS' || key.includes('${') || !/^\$\{[A-Za-z_]\w*\}$/.test(value))) {
+        throw new Error(where + ' 环境变量只允许用于只读 WS 的完整查询值，例如 token=${DEV_WS_TOKEN}');
+      }
+    }
     let segments;
     try { segments = url.pathname.split('/').map(decodeURIComponent); }
     catch { throw new Error(where + ' URL 包含无效的转义字符'); }
@@ -62,6 +67,17 @@ const executionHash = (script) => crypto.createHash('sha256').update(JSON.string
 })).digest('hex');
 
 async function installRequestGuard(context, { readOnlyRequests = [], writeRequests = [], approvedWriteRequests = [], pageUrl } = {}) {
+  // 仅运行进程展开只读连接的查询值；脚本、确认指纹和产物始终保留变量引用。
+  readOnlyRequests = readOnlyRequests.map(rule => {
+    if (rule.method !== 'WS') return rule;
+    const url = new URL(rule.url);
+    url.search = url.search.replace(/(?:\$|%24)(?:\{|%7B)([A-Za-z_]\w*)(?:\}|%7D)/gi, (_, name) => {
+      const value = process.env[name];
+      if (!value) throw new Error('只读 WS 缺少环境变量：' + name);
+      return encodeURIComponent(value);
+    });
+    return { ...rule, url: url.href };
+  });
   assertDisjoint(readOnlyRequests, writeRequests);
   // fulfill 的页面没有浏览器连接的地址空间；Chrome 的 LNA 会误挡其同源内网连接。
   // 只为脚本明确指定的页面来源授权，本模块的接口策略仍逐条检查。

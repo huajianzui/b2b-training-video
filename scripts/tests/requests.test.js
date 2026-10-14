@@ -15,6 +15,24 @@ test('只读与写规则重合或动态路径相交时拒绝歧义配置', () =>
     normalizeRequests([{ method: 'GET', url: '/save' }], 'https://example.invalid', 'write')), /相交/);
 });
 
+test('连接变量只允许完整只读 WS 查询值，不能改变接口地址或写权限', () => {
+  const normalize = (method, url) => normalizeRequests([{method, url}], 'https://example.invalid', 'ro', {readOnly:true});
+  for (const [method, url] of [['POST','/query?token=${ENV}'], ['WS','ws://example.invalid/${ENV}'],
+    ['WS','ws://example.invalid/?${ENV}=1'], ['WS','ws://example.invalid/?token=prefix${ENV}']]) {
+    assert.throws(() => normalize(method, url));
+  }
+  assert.equal(new URL(normalize('WS','ws://example.invalid/?token=${ENV}')[0].url).searchParams.get('token'), '${ENV}');
+});
+
+test('缺少 WS 查询变量在访问页面前明确拒绝，不泄露值或改写规则', async () => {
+  const rules = normalizeRequests([{method:'WS',url:'ws://example.invalid/?token=${B2B_MISSING_WS}'}], 'http://example.invalid', 'ro', {readOnly:true});
+  const before = JSON.stringify(rules);
+  const saved = process.env.B2B_MISSING_WS; delete process.env.B2B_MISSING_WS;
+  try { await assert.rejects(installRequestGuard({}, {readOnlyRequests:rules}), /缺少环境变量：B2B_MISSING_WS/); }
+  finally { if (saved !== undefined) process.env.B2B_MISSING_WS = saved; }
+  assert.equal(JSON.stringify(rules), before);
+});
+
 async function fixture(t, extra = () => false) {
   if (!process.env.TEST_BROWSER_PATH) { t.skip('设置 TEST_BROWSER_PATH 后验证真实浏览器请求'); return null; }
   const counts = { save: 0, read: 0, login: 0, socket: 0 }, sockets = new Set();
@@ -141,4 +159,25 @@ test('未声明的 WebSocket 不连接服务器，只读连接仍可建立', { t
   assert.ok(f.guard.violations.every(message => !message.includes('secret-value')));
   assert.equal(await open('/read-socket'), true, JSON.stringify({ counts: f.counts, violations: f.guard.violations, errors: f.errors })); assert.equal(f.counts.socket, 1);
   assert.throws(() => f.guard.assert(), /WS/);
+});
+
+test('实际 WS 按进程变量精确匹配，特殊字符不扩大查询范围且不会落入报告', { timeout: 60000 }, async t => {
+  const f = await fixture(t); if (!f) return;
+  const saved = process.env.B2B_TEST_WS; process.env.B2B_TEST_WS = 'value &other=?/中文';
+  t.after(() => { if (saved === undefined) delete process.env.B2B_TEST_WS; else process.env.B2B_TEST_WS = saved; });
+  const rules = normalizeRequests([{method:'WS',url:new URL('/env-socket?token=${B2B_TEST_WS}', f.page.url()).href.replace('http:','ws:')}], f.page.url(), 'ro', {readOnly:true});
+  const before = JSON.stringify(rules);
+  const context = await f.context.browser().newContext({serviceWorkers:'block'});
+  const guard = await installRequestGuard(context, {readOnlyRequests:rules, pageUrl:f.page.url()});
+  const page = await context.newPage(); await page.goto(f.page.url());
+  const open = route => page.evaluate(route => new Promise(resolve => {
+    const ws = new WebSocket(location.origin.replace('http:','ws:') + route);
+    ws.onopen = () => { ws.close(); resolve(true); }; ws.onclose = ws.onerror = () => resolve(false);
+  }), route);
+  assert.equal(await open('/env-socket?token=wrong'), false); assert.equal(f.counts.socket,0);
+  assert.equal(await open('/env-socket?token=' + encodeURIComponent(process.env.B2B_TEST_WS) + '&extra=1'), false); assert.equal(f.counts.socket,0);
+  assert.equal(await open('/env-socket?token=' + encodeURIComponent(process.env.B2B_TEST_WS)), true); assert.equal(f.counts.socket,1);
+  assert.equal(JSON.stringify(rules),before);
+  assert.ok(!JSON.stringify({rules,violations:guard.violations}).includes('value'));
+  assert.equal(f.counts.save,0); await context.close();
 });

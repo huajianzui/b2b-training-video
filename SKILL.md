@@ -47,7 +47,7 @@ node app/server.js
 
 也可在对话中确认同一份具体清单，Agent 按明确策略填写，再 `node features.js <清单> --yes`。它只记录范围与方式，不代替每轮真实写入的人工确认。未确认清单不能出片。
 
-从业务实现核实接口：认证 POST、POST 查询等确定只读的接口进入 `readOnlyRequests`，写接口进入 `writeRequests`。方法、来源、路径、查询精确匹配，动态路径仅完整 `{id}` 段。共用 GraphQL/RPC 写接口不能整体标只读。未知 GET 默认读取，已知 GET 写入必须声明，其 HEAD 和其他参数不得默认放行。WebSocket 仅核实的只读通道可用，Service Worker 关闭；API 重定向逐跳检查，导航重定向配置最终地址。
+从业务实现核实接口：认证 POST、POST 查询等确定只读的接口进入 `readOnlyRequests`，写接口进入 `writeRequests`。方法、来源、路径、查询精确匹配，动态路径仅完整 `{id}` 段。共用 GraphQL/RPC 写接口不能整体标只读。未知 GET 默认读取，已知 GET 写入必须声明，其 HEAD 和其他参数不得默认放行。WebSocket 仅核实的只读通道可用；动态查询值可写 `?token=${DEV_WS_TOKEN}`，由执行进程提供、不落盘，缺失报错。Service Worker 关闭；API 重定向逐跳检查，导航重定向配置最终地址。
 
 ## 3. 准备账号、数据和文件
 
