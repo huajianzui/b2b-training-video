@@ -22,7 +22,7 @@ py -3 -m pip install -r requirements.txt
 node preflight.js
 ```
 
-- Node ≥20；Python 为安装了 edge-tts、Pillow 的 3.x，用 `PYTHON` 指定；`FFMPEG` 可指定 FFmpeg。中文字体为 `assets/msyh.ttc`、`msyhbd.ttc`，Windows 自动复制系统字体，其他系统自行准备中文字体。
+- Node ≥20；Python 为安装了 edge-tts 的 3.x，用 `PYTHON` 指定；`FFMPEG` 可指定 FFmpeg。中文字体为 `assets/msyh.ttc`、`msyhbd.ttc`，Windows 自动复制系统字体，其他系统自行准备中文字体。
 - 升级保留 YAML、output、依赖及字体；遇非工具目录、执行锁或符号链接拒绝时先核实，不强制覆盖。
 - **一角色一工具目录，互不嵌套**；各有脚本、output 和 login.storage，绝对登录态路径也不能共享。可通过 `PW_WORKSPACE` 复用依赖，不能覆盖另一角色的产物。
 - `preflight.js` 检查本机浏览器录屏、中文字幕与媒体解码。数据准备前加 `--online` 发固定测试句验证微软语音；完整旁白发送范围纳入集中准备单。

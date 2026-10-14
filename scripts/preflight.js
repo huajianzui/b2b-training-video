@@ -10,11 +10,11 @@ const { requireFrom, ffmpegPath } = require('./deps');
 function findPython() {
   const candidates = [[process.env.PYTHON], ['py', '-3'], ['python3'], ['python']].filter(([cmd]) => cmd);
   for (const [cmd, ...pre] of candidates) {
-    const r = spawnSync(cmd, [...pre, '-c', 'import sys,edge_tts,PIL;assert sys.version_info.major==3;print(sys.executable)'], { encoding: 'utf8' });
+    const r = spawnSync(cmd, [...pre, '-c', 'import sys,edge_tts;assert sys.version_info.major==3;print(sys.executable)'], { encoding: 'utf8' });
     if (r.status === 0 && r.stdout.trim()) return r.stdout.trim();
     if (process.env.PYTHON && cmd === process.env.PYTHON) break;
   }
-  throw new Error('所选 Python 3 或 edge-tts/Pillow 不可用；配置 PYTHON，并在该环境安装 requirements.txt。');
+  throw new Error('所选 Python 3 或 edge-tts 不可用；配置 PYTHON，并在该环境安装 requirements.txt。');
 }
 
 function ensureFonts() {

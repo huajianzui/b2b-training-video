@@ -2,7 +2,7 @@
 
 日期：2026-10-13。基线：main `f553cfa`。实现提交：`2a51e4cf20d50f589d9060b168a3b47ca397804c`，本地分支 `fix/runtime-entries`。
 
-用户列出的两项 P1 和三项 P2 已修复并补充回归。P3 已增加完整验收入口与 GitHub Actions 配置；云端实际运行仍待推送后验收。没有推送、创建 PR、删除远端分支或操作真实业务系统。
+用户列出的两项 P1 和三项 P2 已修复并补充回归。P3 已增加完整验收入口与 GitHub Actions 配置；初次复审时云端实际运行仍待推送后验收，当时没有推送、创建 PR、删除远端分支或操作真实业务系统。后续首次云端验收见文末补记。
 
 ## 修复与证据
 
@@ -49,8 +49,16 @@
 - 升级继续保留用户 YAML、清单、产物、依赖与字体。旧 examples/script.yaml 不自动覆盖；引用本地示例时需将 URL 改成 ../demo/demo.html。
 - 共享 CLI 纳入浏览器及手册实现指纹；旧阶段产物首次升级后应从 check 或完整流程重跑。有效的 YAML 缓存来源回退及显式旧 JSON 登录调用保留。
 - 环境写入批准、演练和正式录制各自的取消/提交选择及每轮数据确认沿用既有方案；没有把演练改成强制取消。
-- Actions 云端尚未执行；本地静态检查和本机全量通过不能替代云端首次运行。CI 使用的配置依据见 [checkout](https://github.com/actions/checkout)、[setup-node](https://github.com/actions/setup-node)、[setup-python](https://github.com/actions/setup-python) 和 [Noto CJK 字体目录](https://github.com/notofonts/noto-cjk/tree/main/Sans/OTF/SimplifiedChinese)。
+- 初次复审时 Actions 云端尚未执行；本地静态检查和本机全量通过不能替代云端首次运行。CI 使用的配置依据见 [checkout](https://github.com/actions/checkout)、[setup-node](https://github.com/actions/setup-node)、[setup-python](https://github.com/actions/setup-python) 和 [Noto CJK 字体目录](https://github.com/notofonts/noto-cjk/tree/main/Sans/OTF/SimplifiedChinese)。
 - 未验收真实业务系统的接口语义、所有登录方式、在线 TTS 服务或非 Windows 环境；这些需要在目标环境依实际业务规则验收。
 - 已合并的远端 fix/p1-hardening 分支保留；外部删除未在本轮执行。
 
 复发预防已经落入 README、SKILL、[入口修复计划](../plans/runtime-entry-hardening.md) 及安装/CLI/运行入口回归：验证从新安装目录出发，并分别覆盖无配置、损坏配置和有效旧产物；“没有失败”必须同时检查跳过与待完成项。复审沿用先前确认的提交边界及来源校验规则，没有发现本轮范围内仍未修复的 P1/P2 问题。
+
+## 2026-10-14：首次云端验收补记
+
+[PR #2 的首次 Windows CI](https://github.com/huajianzui/b2b-training-video/actions/runs/38528621990) 为 132 项中 122 通过、10 失败、0 跳过。Python 路径与依赖安装正确，但前置检查仍导入已经不使用的 Pillow；本机预装该包掩盖了问题。9 项直接被依赖检查阻断，完整制作测试也因此没有到达提交确认。
+
+移除 `preflight.js` 中无用的 Pillow 检查及 SKILL 中对应前提，保留 Python 3、edge-tts 检查和显式解释器失败即拒绝的行为。新增真实 Python 导入拦截回归：禁止导入 PIL 时仍通过，禁止导入 edge-tts 时仍失败。修改前 1 通过、1 失败，修改后 2/2 通过；关联媒体交付 9/9、前置拦截与完整制作流程 2/2 通过，均无跳过。JS 语法与 Git 空白检查通过。
+
+合并以修复提交的云端完整回归为准，最终结果见 [PR #2 检查记录](https://github.com/huajianzui/b2b-training-video/pull/2/checks)。本次只修正安装契约，不增加无用依赖、不放宽测试，也未操作 OVM 数据或请求在线语音。
