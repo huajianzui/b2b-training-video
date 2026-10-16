@@ -14,14 +14,17 @@
  *   node play.js <脚本.yaml> --shots    正式手册素材；--dry --shots 为独立演练素材
  *   node play.js --headed   弹出浏览器窗口（默认无头，服务器 / CI 上也能跑）
  *   node play.js --dry --scenes 9-20   只演练第 9～20 个场景（也可写 12 或 9-），调脚本时用；正式录制不支持
+ *                                      与 --shots 互斥；只回放指定的一段且不截图，不能替代 produce 的 check 环节
+ *                                      （produce --dry 的 check 还要截图并产出演练手册素材）
  */
 
 const CLI = require('./cli').readCli({
   usage: '用法：node play.js [脚本.yaml] [--dry] [--shots] [--headed]\n'
-    + '  --dry --scenes <9-20|9-|12>  只演练完整场景组，不截图\n'
+    + '  --dry --scenes <9-20|9-|12>  只演练完整场景组，不截图；与 --shots 互斥，也不能替代 produce 的 check 环节\n'
+    + '  --dry --trial                按正式录制的提交分支试跑：动作照常执行，写请求被拦截、不落库\n'
     + '  未指定 YAML 时仅使用缓存 JSON 记录的 YAML 来源；submit 仍需本轮用户确认。',
-  options: { dry: { type: 'boolean' }, shots: { type: 'boolean' }, headed: { type: 'boolean' }, scenes: { type: 'string' } },
-  validate: ({ values }) => sceneRange(values)
+  options: { dry: { type: 'boolean' }, shots: { type: 'boolean' }, headed: { type: 'boolean' }, trial: { type: 'boolean' }, scenes: { type: 'string' } },
+  validate: ({ values }) => { sceneRange(values); trialMode(values); }
 });
 
 const fs = require('fs');
@@ -41,9 +44,40 @@ const OUT = path.join(HERE, 'output');
 const DRY = !!CLI.values.dry;
 const HEADED = !!CLI.values.headed;
 const SHOTS = !!CLI.values.shots;
-const STAGE = DRY ? 'rehearsal' : 'record';
+const TRIAL = !!CLI.values.trial;
+// 试跑用正式阶段的脚本（提交分支），但产物写到 manual/trial，不碰 record 阶段的既有素材。
+const SCRIPT_STAGE = DRY && !TRIAL ? 'rehearsal' : 'record';
+const STAGE = TRIAL ? 'trial' : DRY ? 'rehearsal' : 'record';
 const MATERIAL_DIR = path.join(OUT, 'manual', STAGE);
 const SHOT_DIR = path.join(MATERIAL_DIR, 'shots');
+// 每轮都要清空截图目录。宿主若对单轮批量删除设确认阈值，递归删除会在「准备与导航」阶段直接失败
+// （与业务脚本无关，很容易误判成脚本写错）；所以文件多时整体改名让位，不做逐个删除。
+const STALE_DIR = path.join(OUT, '_stale');
+const SHOT_DELETE_LIMIT = 20;
+
+function resetShots() {
+  let count = 0;
+  try { count = fs.readdirSync(SHOT_DIR).length; } catch { /* 目录还不存在 */ }
+  if (count > SHOT_DELETE_LIMIT) {
+    fs.mkdirSync(STALE_DIR, { recursive: true });
+    const stamp = new Date().toISOString().replace(/[-:T]/g, '').slice(0, 14);
+    let target = path.join(STALE_DIR, 'shots-' + STAGE + '-' + stamp);
+    for (let i = 2; fs.existsSync(target); i++) target = path.join(STALE_DIR, 'shots-' + STAGE + '-' + stamp + '-' + i);
+    fs.renameSync(SHOT_DIR, target);
+    console.log('[手册截图] 旧目录 ' + count + ' 个文件整体移至 ' + path.relative(HERE, target).replace(/\\/g, '/')
+      + '（避免宿主批量删除确认）；确认交付后可手工清理 output/_stale。');
+  } else if (count) {
+    fs.rmSync(SHOT_DIR, { recursive: true, force: true });
+  }
+  fs.mkdirSync(SHOT_DIR, { recursive: true });
+}
+
+function trialMode(values = CLI.values) {
+  if (!values.trial) return false;
+  if (!values.dry) throw new Error('--trial 只能配合 --dry 使用（试跑不录制、不写数据）');
+  if (values.shots) throw new Error('--trial 不截图，不能与 --shots 同用');
+  return true;
+}
 
 function sceneRange(values = CLI.values) {
   if (values.scenes === undefined) return null;
@@ -137,6 +171,55 @@ function describe(c) {
   return c.by + '=' + c.value + (c.name !== undefined ? '[' + c.name + ']' : '') + (c.nth !== undefined ? '#' + c.nth : '');
 }
 
+/** 当前可见的最外层遮罩/抽屉/弹窗；一个弹窗会同时命中多个选择器，按包含关系只留最外层 */
+const VISIBLE_BLOCKERS = () => {
+  const sel = '.el-overlay, .el-drawer, .el-dialog, .el-message-box, [role="dialog"], dialog[open]';
+  return [...document.querySelectorAll(sel)].filter((el) => {
+    const r = el.getBoundingClientRect();
+    const style = getComputedStyle(el);
+    if (r.width < 2 || r.height < 2 || style.visibility === 'hidden' || style.display === 'none' || Number(style.opacity) < 0.05) return false;
+    return !el.parentElement || !el.parentElement.closest(sel);
+  }).map((el) => (el.className && String(el.className).split(/\s+/)[0]) || el.tagName.toLowerCase());
+};
+
+/**
+ * 点击失败时的现场诊断：元素在不在、被谁挡住。
+ * isVisible() 不判遮挡，所以断言全过也可能点不动 —— 真正暴露问题的往往是 click。
+ */
+async function whyNotClickable(page, candidates) {
+  const hints = [];
+  const present = [];
+  for (const candidate of candidates) {
+    const locator = toLocator(page, candidate, false);
+    const count = await locator.count().catch(() => 0);
+    if (!count) continue;
+    const visible = await locator.first().isVisible().catch(() => false);
+    present.push(describe(candidate) + (visible ? '（可见）' : '（不可见）'));
+  }
+  if (present.length) hints.push('这些定位能匹配到元素：' + present.join(' ｜ '));
+  else hints.push('所有候选定位都匹配不到元素，页面可能还没渲染或文案已变');
+  const blockers = await page.evaluate(VISIBLE_BLOCKERS).catch(() => []);
+  if (blockers.length) {
+    hints.push('当前可见的最外层遮罩、抽屉或弹窗 ' + blockers.length + ' 个（' + [...new Set(blockers)].join('、') + '）'
+      + '：上一个场景没关掉的面板会盖住目标，在该场景开头先关闭它（如 click css=.el-drawer__close-btn）');
+  }
+  return hints.length ? '（' + hints.join('；') + '）' : '';
+}
+
+/** 超时后区分「元素不存在」与「元素存在但不可见」：isVisible() 不判遮挡，断言全过也可能点不动 */
+async function whyNotVisible(page, candidates) {
+  const hints = [];
+  const present = [];
+  for (const candidate of candidates) {
+    const count = await toLocator(page, candidate, false).count().catch(() => 0);
+    if (count) present.push(describe(candidate));
+  }
+  if (present.length) hints.push('这些定位能匹配到元素，但当前不可见（可能被抽屉/弹窗遮挡、尚未渲染或已滚出视口）：' + present.join(' ｜ '));
+  const blockers = await page.evaluate(VISIBLE_BLOCKERS).catch(() => []);
+  if (blockers.length) hints.push('当前可见的最外层遮罩、抽屉或弹窗 ' + blockers.length + ' 个：上一个场景没关掉的面板会盖住目标，而断言只看可见性、不判遮挡，在该场景开头先关闭它（如 click css=.el-drawer__close-btn）');
+  return hints.length ? '（' + hints.join('；') + '）' : '';
+}
+
 /** 轮询所有候选，返回第一个可见的；index > 0 说明主定位已失效、靠降级命中 */
 async function findVisible(page, candidates, timeout) {
   const deadline = Date.now() + timeout;
@@ -146,7 +229,7 @@ async function findVisible(page, candidates, timeout) {
       if (await locator.isVisible().catch(() => false)) return { locator, index: i };
     }
     if (Date.now() > deadline) {
-      throw new Error('找不到可见元素：' + candidates.map(describe).join(' ｜ '));
+      throw new Error('找不到可见元素：' + candidates.map(describe).join(' ｜ ') + (await whyNotVisible(page, candidates)));
     }
     await wait(250);
   }
@@ -227,9 +310,14 @@ function makeCtx(page) {
         if (!DRY) await wait(250);
       }
     },
-    async click(loc) {
+    async click(loc, candidates) {
       await ctx.moveTo(loc);
-      await loc.click();
+      try {
+        await loc.click();
+      } catch (error) {
+        // 元素找得到、断言也过，却点不动：多半是上一个场景遗留的抽屉或弹窗盖住了它。
+        throw new Error(error.message.split('\n')[0] + (await whyNotClickable(page, candidates || [])));
+      }
     },
     findVisible: (cands, timeout) => findVisible(page, cands, timeout || CFG.locateTimeout),
   };
@@ -285,7 +373,7 @@ async function runAction(ctx, adapters, a, notes, step) {
       await page.goto(a.url, { waitUntil: 'domcontentloaded' });
       return a.url;
     case 'click':
-      await ctx.click(await locate());
+      await ctx.click(await locate(), a.target);
       return hitName;
     case 'hover':
       await ctx.moveTo(await locate());
@@ -295,7 +383,7 @@ async function runAction(ctx, adapters, a, notes, step) {
       return hitName;
     case 'fill': {
       const el = await editable(await locate());
-      await ctx.click(el);
+      await ctx.click(el, a.target);
       await el.fill('');
       if (DRY) await el.fill(a.text);
       else await el.pressSequentially(a.text, { delay: CFG.typeDelay });
@@ -385,7 +473,7 @@ async function main() {
   const source = CLI.positionals[0]
     || (fs.existsSync(SCRIPT_JSON) && JSON.parse(fs.readFileSync(SCRIPT_JSON, 'utf8')).source);
   if (!source) throw new Error('缺少 YAML 来源；旧 JSON 不能作为执行输入，请运行 node play.js <脚本.yaml>。');
-  const script = loadScript(path.resolve(HERE, source), { stage: STAGE });
+  const script = loadScript(path.resolve(HERE, source), { stage: SCRIPT_STAGE });
   const inRange = sceneRange();
   if (inRange) {
     const keep = script.scenes.map((s, i) => inRange(i + 1));
@@ -415,9 +503,9 @@ async function main() {
   }
 
   fs.mkdirSync(OUT, { recursive: true });
-  const report = { title: script.title, mode: DRY ? 'dry' : 'record', stage: STAGE, input: executionHash(script),
+  const report = { title: script.title, mode: TRIAL ? 'trial' : DRY ? 'dry' : 'record', stage: STAGE, input: executionHash(script),
     at: new Date().toISOString(), scenes: [], writes: [] };
-  const reportFile = path.join(OUT, 'run-report.json');
+  const reportFile = path.join(OUT, TRIAL ? 'trial-report.json' : 'run-report.json');
   const session = { input: report.input, stage: STAGE, scenes: [] };
   const manual = { input: report.input, stage: STAGE, scenes: [] };
   let browser, context, guard, page, video, stopAt, failed;
@@ -426,27 +514,31 @@ async function main() {
   fs.rmSync(path.join(MATERIAL_DIR, 'steps.json'), { force: true });
   try {
     const auth = await ensureLoggedIn(asLoginProject(script), { force: !!process.env.REC_RELOGIN, trust: !!process.env.REC_TRUST_AUTH });
-    const confirmationStarted = Date.now();
-    report.confirmation = await waitForData(script);
-    report.confirmationWaitMs = Date.now() - confirmationStarted;
+    // 试跑不真正写入，所以不需要提交确认；确认页只服务于真实提交。
+    if (!TRIAL) {
+      const confirmationStarted = Date.now();
+      report.confirmation = await waitForData(script);
+      report.confirmationWaitMs = Date.now() - confirmationStarted;
+    }
     browser = await chromium.launch({ headless: !HEADED, args: ['--disable-blink-features=AutomationControlled'] });
     fs.rmSync(videoDir, { recursive: true, force: true });
     context = await browser.newContext({ viewport: CFG.viewport, deviceScaleFactor: 1, locale: 'zh-CN', serviceWorkers: 'block',
       recordVideo: DRY ? undefined : { dir: videoDir, size: CFG.viewport },
       ...(auth.storageState ? { storageState: auth.storageState } : {}) });
     guard = await installRequestGuard(context, { readOnlyRequests: script.readOnlyRequests,
-      writeRequests: script.safety.writeRequests, approvedWriteRequests: script.safety.approvedWriteRequests, pageUrl: script.url });
+      writeRequests: script.safety.writeRequests, approvedWriteRequests: script.safety.approvedWriteRequests, pageUrl: script.url, trial: TRIAL });
     report.writes = guard.writes;
     if (DRY && SHOTS) await context.addInitScript('window.__shotMode = true;');
     await context.addInitScript(CURSOR_OVERLAY);
     page = await context.newPage();
     const ctx = makeCtx(page);
     const t0 = Date.now(), now = () => Date.now() - t0;
-    console.log('[' + (DRY ? '演练' : '录制') + '] ' + script.title + '，共 ' + script.scenes.length + ' 个场景');
+    console.log('[' + (TRIAL ? '提交路径试跑' : DRY ? '演练' : '录制') + '] ' + script.title + '，共 ' + script.scenes.length + ' 个场景'
+      + (TRIAL ? '（动作照常执行，写请求会被拦截，不会落库）' : ''));
     await page.goto(script.url, { waitUntil: 'domcontentloaded' });
     if (!DRY) await wait(800);
     guard.assert();
-    if (SHOTS) { fs.rmSync(SHOT_DIR, { recursive: true, force: true }); fs.mkdirSync(SHOT_DIR, { recursive: true }); }
+    if (SHOTS) resetShots();
   for (const scene of script.scenes) {
     guard.grant([]);
     const start = now();
@@ -454,6 +546,11 @@ async function main() {
     const audioAt = start + CFG.lead;
     const entry = { id: scene.id, name: scene.name, status: 'ok', steps: [], notes: [] };
     report.scenes.push(entry);
+    // 试跑：本场景内被拦下的写请求数。
+    const blockedBefore = TRIAL ? guard.blockedWrites.length : 0;
+    // 遇到第一个被拦的声明写入就收尾：之后的服务端结果都不会出现，再跑只会白等超时，
+    // 而且那种失败是试跑本身的产物，不能记成场景失败。上传/预检同样算。
+    const reachedWrite = () => TRIAL && guard.blockedWrites.length > blockedBefore;
     console.log('\n■ ' + scene.id + ' ' + (scene.name || '') + (narr ? '（旁白 ' + (narr / 1000).toFixed(1) + 's）' : ''));
 
     const doc = { id: scene.id, steps: [], result: null };
@@ -461,6 +558,11 @@ async function main() {
 
     // 手册的结果截图取最后一次有断言的检查点：收尾是「取消」时停在弹窗还开着的画面，是「提交」时停在成功提示
     const checkpoint = async (expects) => {
+      // 试跑：提交请求已被拦下，其后的成功断言必然落空，跳过以免白等超时。
+      if (reachedWrite()) {
+        if (expects.length) console.log('   ⓘ 提交请求已被拦截，跳过 ' + expects.length + ' 条提交后断言');
+        return;
+      }
       const results = [];
       for (const e of expects) {
         results.push(await checkExpect(ctx, e));
@@ -479,6 +581,11 @@ async function main() {
       if (!DRY) await wait(scene.timing === 'before' ? CFG.lead + narr + 200 : CFG.lead);
 
       for (const [i, a] of scene.actions.entries()) {
+        // 试跑：提交请求已被拦下，后面的确认框、成功提示都不会出现，继续跑只会白等超时。
+        if (reachedWrite()) {
+          console.log('   ⓘ 提交请求已被拦截，本场景余下 ' + (scene.actions.length - i) + ' 个动作不再执行（试跑到此为止）');
+          break;
+        }
         if (i === scene.expectAt) await checkpoint(scene.expect);
         guard.grant(a.prepare ? scene.preparationRequests : i >= scene.expectAt && scene.writeMode === 'submit' ? scene.writeRequests : []);
         const step = { id: scene.id + '-' + String(i + 1).padStart(2, '0'), op: a.op, label: a.label || '',
@@ -492,21 +599,44 @@ async function main() {
         guard.assert();
         entry.steps.push(a.op + ' ' + what);
         console.log('   ✓ ' + a.op + '  ' + what);
+        // 点击触发的请求要经浏览器进程回到 Node 才记进 blockedWrites，留一点窗口再判断。
+        if (TRIAL) await wait(400);
         if (!DRY && a.op !== 'wait') await wait(CFG.stepPause);
       }
       if (scene.expectAt >= scene.actions.length) await checkpoint(scene.expect);
       await checkpoint(scene.endExpect);
       guard.assert();
       guard.grant([]);
+      // 试跑：本场景已走到提交点，记为 trial 而不是失败。
+      if (reachedWrite()) {
+        entry.status = 'trial';
+        entry.blockedWrites = guard.blockedWrites.slice(blockedBefore);
+        console.log('   ⓘ 写请求已被拦截（未落库）：' + entry.blockedWrites.join('、'));
+      }
       for (const n of entry.notes) console.log('   ⚠ ' + n);
     } catch (err) {
       // 异步上传被策略拒绝后，等待结果可能先超时；保留真正的请求阻塞原因。
       try { guard.assert(); } catch (policyError) { err = policyError; }
+      const blockedNow = TRIAL ? guard.blockedWrites.slice(blockedBefore) : [];
+      if (blockedNow.length) {
+        // 试跑：写请求被拦下是预期结果，之后的服务端结果不会出现，不计为本场景失败。
+        entry.status = 'trial';
+        entry.error = err.message.split('\n')[0];
+        entry.blockedWrites = blockedNow;
+        console.log('   ⓘ 写请求已被拦截（未落库）：' + blockedNow.join('、'));
+        console.log('     之后的断言按预期落空：' + entry.error);
+        session.scenes.push({ id: scene.id, start: start / 1000, audioAt: audioAt / 1000, end: now() / 1000 });
+        continue;
+      }
       entry.status = 'failed';
       entry.error = err.message.split('\n')[0];
+      // Playwright 把关键线索（谁挡住了点击）放在第一行之后，只留首行会逼人去看截图。
+      const keyLines = err.message.split('\n').map((s) => s.trim())
+        .filter((s) => /intercepts pointer events|not visible|not stable|subtree|obscur|Timeout \d+ms exceeded/.test(s));
+      entry.errorDetail = [entry.error, ...keyLines.filter((s) => s !== entry.error)].join(' ');
       entry.failure = await captureFailure(page, scene);
       failed = entry;
-      console.error('   ✘ ' + entry.error);
+      console.error('   ✘ ' + entry.errorDetail);
       console.error('     现场截图：' + entry.failure.screenshot);
       break;
     }
@@ -533,7 +663,8 @@ async function main() {
   }
   try {
     if (guard) guard.assert();
-    if (report.writes.some((w) => w.outcome === 'unknown')) throw new Error('已有提交请求响应未知，请核对测试数据后重新确认。');
+    // 试跑不发放写许可，blockedWrites 是预期记录，不参与「响应未知」判定。
+    if (!TRIAL && report.writes.some((w) => w.outcome === 'unknown')) throw new Error('已有提交请求响应未知，请核对测试数据后重新确认。');
     if (failed) throw new Error(failed.error);
     if (!DRY) {
       const raw = path.join(OUT, 'raw.webm');
@@ -564,15 +695,21 @@ async function main() {
       console.log('[手册素材] ' + path.relative(HERE, MATERIAL_DIR));
     }
     report.ok = true;
-    if (DRY) console.log('\n[演练通过] 全部 ' + script.scenes.length + ' 个场景可执行，断言成立。');
+    if (DRY && TRIAL) {
+      const trialed = report.scenes.filter((s) => s.status === 'trial').length;
+      console.log('\n[提交路径试跑通过] ' + script.scenes.length + ' 个场景的动作与定位可执行，'
+        + trialed + ' 个场景走到了提交分支（写请求已被拦截，未落库）。');
+      console.log('  提交后的成功断言按预期落空，不代表该场景失败；业务规则类错误（如服务端 400）试跑看不到，需另做只读前置校验。');
+    } else if (DRY) console.log('\n[演练通过] 全部 ' + script.scenes.length + ' 个场景可执行，断言成立。');
   } catch (error) { report.ok = false; report.failure = failed || { error: error.message }; }
   if (!report.ok && report.writes.length) {
     report.recovery = '已有提交请求发出，数据可能已改变；核对响应和测试数据、复位或换用独立数据后，重新运行并确认。不会自动回滚。';
     console.error(report.recovery);
   }
+  if (TRIAL) report.blockedWrites = guard ? guard.blockedWrites : [];
   report.finishedAt = new Date().toISOString();
   fs.writeFileSync(reportFile, JSON.stringify(report, null, 2), 'utf8');
-  if (!report.ok) console.error('[失败] ' + report.failure.error + '；详情：output/run-report.json');
+  if (!report.ok) console.error('[失败] ' + report.failure.error + '；详情：' + path.relative(HERE, reportFile).replace(/\\/g, '/'));
   process.exit(report.ok ? 0 : 2);
 }
 

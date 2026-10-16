@@ -66,7 +66,7 @@ const executionHash = (script) => crypto.createHash('sha256').update(JSON.string
   scenes: script.scenes, readOnlyRequests: script.readOnlyRequests, safety: script.safety,
 })).digest('hex');
 
-async function installRequestGuard(context, { readOnlyRequests = [], writeRequests = [], approvedWriteRequests = [], pageUrl } = {}) {
+async function installRequestGuard(context, { readOnlyRequests = [], writeRequests = [], approvedWriteRequests = [], pageUrl, trial = false } = {}) {
   // 仅运行进程展开只读连接的查询值；脚本、确认指纹和产物始终保留变量引用。
   readOnlyRequests = readOnlyRequests.map(rule => {
     if (rule.method !== 'WS') return rule;
@@ -82,13 +82,18 @@ async function installRequestGuard(context, { readOnlyRequests = [], writeReques
   // fulfill 的页面没有浏览器连接的地址空间；Chrome 的 LNA 会误挡其同源内网连接。
   // 只为脚本明确指定的页面来源授权，本模块的接口策略仍逐条检查。
   if (pageUrl && /^https?:/.test(pageUrl)) await context.grantPermissions(['local-network-access'], { origin: new URL(pageUrl).origin });
-  const violations = [], writes = [];
+  const violations = [], writes = [], blockedWrites = [];
   let grant = [], closing = false;
   const describe = (method, value) => {
     const u = new URL(value), keys = [...new Set(u.searchParams.keys())].map(encodeURIComponent);
     return method + ' ' + u.origin + u.pathname + (keys.length ? '?' + keys.map(k => k + '=<已隐藏>').join('&') : '');
   };
   function blocked(method, url) {
+    // 试跑（trial）：动作照常执行、不真正写入，已声明的写接口被拦截属预期结果，记下来而不是报错。
+    if (trial && writeRequests.some((r) => matches(r, method === 'HEAD' ? 'GET' : method, url, { ignoreSearch: true }))) {
+      blockedWrites.push(describe(method, url));
+      return;
+    }
     const message = '写入未批准或接口未声明：' + describe(method, url)
       + '；请核对 readOnlyRequests / writeRequests 和本阶段的提交确认';
     violations.push(message);
@@ -152,13 +157,15 @@ async function installRequestGuard(context, { readOnlyRequests = [], writeReques
     else { blocked('WS', socket.url()); socket.close({ code: 1008, reason: '未经批准的业务通道' }); }
   });
   return {
-    violations, writes,
+    violations, writes, blockedWrites,
     grant(requests = []) {
       const same = (a, b) => a.method === b.method && a.url === b.url;
       if (!Array.isArray(requests) || requests.some((r) => !writeRequests.some((w) => same(w, r))
         || !approvedWriteRequests.some((w) => same(w, r)))) {
         throw new Error('本阶段未批准该写接口，不能开放提交许可。');
       }
+      // 试跑只验证提交分支能不能走通：许可照常校验，但不真正放行，请求仍会被拦下。
+      if (trial) return;
       grant = requests.slice();
     },
     close() { closing = true; grant = []; },

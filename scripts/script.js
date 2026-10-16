@@ -20,6 +20,8 @@
  *       feature: list.search             本场景演示清单里的哪个功能，可写数组
  *       narration: 这一句旁白念完之前，场景不会结束
  *       timing: with | before            with = 边说边做（默认）；before = 说完再做
+ *       hold: 0.6                       场景末尾多留几秒（默认 0.6）让结果看清。收尾动作执行后只剩 0.4 秒留白，
+ *                                       要让「点完的结果」看清就把这个场景级 hold 调大；写进 ending 里会被忽略（会报错）
  *       actions:
  *         - click: { role: button, name: 搜索 }
  *           label: 搜索                   手册里对控件的称呼，可省略（默认从界面读）
@@ -30,8 +32,10 @@
  *       feature: list.create          关联功能清单（顶层 features: xxx.features.yaml）；可写数组，任一被勾选就保留
  *       continue: true                接着上一个场景的页面状态继续（同一个窗口里分几段讲）；要和上一个场景关联相同的功能，上一个场景不能有 ending
  *       ending:                       写数据功能的两种收尾，按确认页选的处理方式取用，接在场景末尾
- *         cancel: { narration, actions, expect, doc }
- *         submit: { narration, actions, expect, doc }
+ *         cancel: { narration, actions, expect, doc }    取消收尾；写别的键会报错
+ *         submit: { narration, actions, expect, doc }    提交收尾
+ *         两种收尾的 actions 都要写 at：收尾旁白拼在整段旁白末尾，收尾动作却接在基础动作之后，
+ *         不写 at 就必然抢在旁白之前执行。锚点取宣布该动作的那句话，见 script.yaml 最后一段完整示例。
  *
  * 定位写法（target）—— 可以给一个，也可以给一个数组作为降级候选，按顺序取第一个可见的：
  *   "#kw"                         字符串：原样交给 Playwright（css / text= / role= 都行）
@@ -110,11 +114,16 @@ function normTarget(raw, where) {
  * 可附带 label：手册里对这个控件的称呼（定位写的是 id 之类时，界面上读不出名字）
  */
 function normAction(raw, where, baseUrl, baseDir, recordedUploads) {
+  if (raw && typeof raw === 'object' && !Array.isArray(raw) && Object.hasOwn(raw, 'cue')) {
+    throw new ScriptError(where + '：cue 是内部派生字段，不能在动作里填写；用 at 指定旁白锚点。');
+  }
   const a = normActionBody(raw, where, baseUrl, baseDir, recordedUploads);
   if (raw.label !== undefined) a.label = String(raw.label);
   if (raw.at !== undefined) a.at = String(raw.at);
   if (raw.prepare !== undefined && typeof raw.prepare !== 'boolean') throw new ScriptError(where + ' prepare 必须是布尔值');
   if (raw.prepare) a.prepare = true;
+  // 收尾动作没写 at 时由 withEnding 算出的默认锚点；写了 at 时 resolveCue 会覆盖它。
+  if (raw.defaultCue !== undefined) a.cue = Number(raw.defaultCue);
   return a;
 }
 
@@ -134,7 +143,7 @@ function normActionBody(raw, where, baseUrl, baseDir, recordedUploads) {
   if (!raw || typeof raw !== 'object' || Array.isArray(raw)) {
     throw new ScriptError(where + '：动作要写成「动作名: 参数」，实际是 ' + JSON.stringify(raw));
   }
-  const keys = Object.keys(raw).filter((k) => !['label', 'at', 'prepare'].includes(k));
+  const keys = Object.keys(raw).filter((k) => !['label', 'at', 'prepare', 'defaultCue'].includes(k));
   if (keys.length !== 1) throw new ScriptError(where + '：一个动作只能有一个动作名，实际是 ' + keys.join(', '));
   const op = keys[0];
   const arg = raw[op];
@@ -193,6 +202,46 @@ function normDoc(raw) {
 }
 
 const MODE_NAME = { cancel: '填完取消', submit: '真实提交' };
+// ending.<模式> 里允许写的键；写别的会被整块忽略，所以宁可报错
+const ENDING_KEYS = ['narration', 'actions', 'expect', 'doc'];
+
+/**
+ * 收尾写法检查：这三种写法都会被静默忽略，出的片子看不出问题，所以直接报错。
+ *   1. 场景没有 feature → applyFeature 直接返回原场景，ending 整块丢掉
+ *   2. ending 下写了 cancel / submit 以外的模式
+ *   3. ending.<模式> 里写了 narration / actions / expect / doc 以外的键（如把 hold 写进收尾）
+ */
+function checkEnding(raw, where) {
+  const end = raw.ending;
+  if (end === undefined || end === null) return;
+  if (raw.feature === undefined) {
+    throw new ScriptError(where + '：ending 只在关联了 feature 的写功能场景里生效，这个场景没写 feature，整块收尾会被忽略。');
+  }
+  if (typeof end !== 'object' || Array.isArray(end)) throw new ScriptError(where + '：ending 要写成 { cancel: {...}, submit: {...} }');
+  for (const [mode, block] of Object.entries(end)) {
+    if (!Object.hasOwn(MODE_NAME, mode)) {
+      throw new ScriptError(where + '：ending 只有 cancel（填完取消）和 submit（真实提交）两种收尾，实际写了「' + mode + '」');
+    }
+    if (!block || typeof block !== 'object' || Array.isArray(block)) throw new ScriptError(where + '：ending.' + mode + ' 要写成对象');
+    const extra = Object.keys(block).filter((k) => !ENDING_KEYS.includes(k));
+    if (extra.length) {
+      throw new ScriptError(where + '：ending.' + mode + ' 不认识「' + extra.join('、') + '」，可用的只有 '
+        + ENDING_KEYS.join(' / ') + '；hold 是场景级字段，要写在这一层场景上。');
+    }
+  }
+}
+
+/**
+ * 收尾旁白的最后一个分句，作为没写 at 的收尾动作的默认锚点。
+ * 提示词要求把「暂不发起时可以取消返回」这类话放在旁白结尾，收尾动作却接在基础动作之后，
+ * 所以不写 at 的收尾动作必然抢在旁白之前执行（实测抢跑中位 10.8s、最大 23.7s）。
+ */
+function defaultEndingAnchor(text) {
+  const s = String(text || '').trim();
+  if (!s) return null;
+  const parts = s.split(/(?<=[。！？；])|(?<=[，、])/).map((p) => p.trim()).filter(Boolean);
+  return parts.length ? parts[parts.length - 1] : s;
+}
 
 /**
  * 把选中的收尾接到场景后面：旁白、动作顺接，手册结果以收尾为准。
@@ -202,9 +251,18 @@ function withEnding(s, end) {
   const d = s.doc || {};
   const e = end.doc || {};
   const list = (v) => (v === undefined ? [] : Array.isArray(v) ? v : [v]);
+  const narration = [s.narration, end.narration].filter(Boolean).join('');
+  const anchor = defaultEndingAnchor(end.narration);
+  const anchorAt = anchor ? narration.lastIndexOf(anchor) : -1;
+  const actions = list(end.actions).map((a) => {
+    if (anchorAt >= 0 && a && typeof a === 'object' && !Array.isArray(a) && !Object.hasOwn(a, 'at')) {
+      return Object.assign({}, a, { defaultCue: speakWeight(narration.slice(0, anchorAt)) / (speakWeight(narration) || 1) });
+    }
+    return a;
+  });
   return Object.assign({}, s, {
-    narration: [s.narration, end.narration].filter(Boolean).join(''),
-    actions: list(s.actions).concat(list(end.actions)),
+    narration,
+    actions: list(s.actions).concat(actions),
     expectAt: list(s.actions).length,
     endExpect: list(end.expect),
     doc: { text: e.text || d.text, result: e.result || d.result, tips: list(d.tips).concat(list(e.tips)) },
@@ -338,6 +396,7 @@ function normalize(doc, file, { stage = 'record', recordedUploads = [] } = {}) {
     for (const key of ['writeMode', 'writeRequests', 'preparationRequests', 'expectAt', 'endExpect']) {
       if (Object.hasOwn(raw, key)) throw new ScriptError(where + '：' + key + ' 是内部字段，不能在场景中填写；提交授权由已确认功能清单和 ending 派生。');
     }
+    checkEnding(raw, where);
     const id = String(raw.id || 's' + String(i + 1).padStart(2, '0'));
     if (/[\/\\:*?"<>|\u0000-\u001f]/.test(id)) throw new ScriptError(where + '：id 不能包含路径分隔符、控制字符或文件名非法字符');
     const fileId = id.toLowerCase();

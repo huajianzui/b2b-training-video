@@ -43,7 +43,9 @@ function installRuntime(source, destination) {
   for (const dir of ['adapters', 'app', 'prompts', 'tools', 'demo']) collect(dir);
   const entries = files.map(rel => ({ rel, source: rel }));
   entries.push({ rel: 'script.yaml', source: 'script.yaml', preserve: true },
+    { rel: 'script.features.yaml', source: 'script.features.yaml', preserve: true },
     { rel: path.join('examples', 'script.yaml'), source: 'script.yaml', preserve: true, relocateDemo: true },
+    { rel: path.join('examples', 'script.features.yaml'), source: 'script.features.yaml', preserve: true },
     { rel: path.join('examples', 'authenticated.yaml'), source: path.join('examples', 'authenticated.yaml'), preserve: true });
   // 写入之前检查所有覆盖路径，防止目标子目录链接把写入引到其他位置。
   for (const { rel, source: sourceRel } of entries) {

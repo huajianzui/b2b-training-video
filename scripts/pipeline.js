@@ -10,6 +10,22 @@ const { acquireLock } = require('./lock');
 const STEPS = ['script', 'login', 'check', 'tts', 'record', 'manual', 'compose', 'verify', 'cards'];
 const digest = (value) => crypto.createHash('sha256').update(JSON.stringify(value)).digest('hex');
 
+// 续跑报错要说清「到底哪部分变了」。成分与各环节哈希严格对应，只用于诊断，不参与哈希，旧 pipeline.json 没有 parts 也能跑。
+const STAGE_PARTS = {
+  check: ['identity', 'features', 'browserCode', 'adapters', 'actions', 'requests', 'safety'],
+  tts: ['ttsCode', 'voice', 'rate', 'speech'],
+  record: ['identity', 'features', 'browserCode', 'adapters', 'tts', 'scenes', 'requests', 'safety'],
+  manual: ['record', 'manualCode', 'documentation'],
+  compose: ['record', 'composeCode', 'watermark', 'bgm'],
+};
+const PART_LABELS = {
+  identity: '脚本来源、地址或登录角色', features: '功能清单', browserCode: '浏览器执行器实现（script/play/requests 等）',
+  adapters: '适配器配置', actions: '动作、断言、feature、continue（不含旁白与 at）', requests: '只读请求清单', safety: '写入与提交清单',
+  ttsCode: '配音脚本实现', voice: '配音音色', rate: '语速', speech: '旁白文本', tts: '配音产物', scenes: '完整场景（含旁白与 at）',
+  record: '录制来源（含以上各项）', manualCode: '手册实现', documentation: '手册标题与文案',
+  composeCode: '后期合成实现', watermark: '水印', bgm: '背景音乐',
+};
+
 function fileHash(file) {
   const hash = crypto.createHash('sha256');
   const fd = fs.openSync(file, 'r');
@@ -40,7 +56,9 @@ function fingerprints(script, bgm, { post = false } = {}) {
     overview: script.manual.overview || (script.intro && script.intro.narration),
     shared: script.features && script.features.shared,
     scenes: script.scenes.map((s) => ({ id: s.id, name: s.name, narration: s.narration, doc: s.doc })) };
-  const tts = digest({ implementation: codeHash(['tts.py', 'speech.py']), voice: script.voice, rate: script.rate, scenes: script.scenes.map((s) => ({ id: s.id, speech: s.speech })) });
+  const ttsCode = codeHash(['tts.py', 'speech.py']);
+  const speeches = script.scenes.map((s) => ({ id: s.id, speech: s.speech }));
+  const tts = digest({ implementation: ttsCode, voice: script.voice, rate: script.rate, scenes: speeches });
   const record = digest({ identity, features, implementation: browserCode, adapters: script.adapters, tts, scenes: script.scenes,
     requests: script.readOnlyRequests, safety: script.safety });
   const capture = digest({ source: fs.realpathSync(script.source), url: script.url,
@@ -51,8 +69,30 @@ function fingerprints(script, bgm, { post = false } = {}) {
   const manual = digest({ record, implementation: manualCode, ...documentation });
   if (bgm && !fs.statSync(bgm).isFile()) throw new Error('背景音乐必须是可读取的音频文件：' + bgm);
   const music = bgm ? { source: fs.realpathSync(bgm), hash: fileHash(bgm) } : null;
-  const compose = digest({ record, implementation: codeHash(['compose.py', 'subtitles.py']), watermark: script.watermark, bgm: music });
-  return { identity, check, capture, manual, rehearsalManual: digest({ check, implementation: manualCode, ...documentation }), tts, record, compose };
+  const composeCode = codeHash(['compose.py', 'subtitles.py']);
+  const compose = digest({ record, implementation: composeCode, watermark: script.watermark, bgm: music });
+  const parts = { identity, features, browserCode, manualCode, composeCode, record, tts,
+    adapters: digest(rehearsal.adapters), actions: digest(actions), requests: digest(rehearsal.readOnlyRequests), safety: digest(rehearsal.safety),
+    ttsCode, voice: script.voice ?? null, rate: script.rate ?? null, speech: digest(speeches), scenes: digest(script.scenes),
+    documentation: digest(documentation), watermark: script.watermark ?? null, bgm: music ? digest(music) : null };
+  return { identity, check, capture, manual, rehearsalManual: digest({ check, implementation: manualCode, ...documentation }), tts, record, compose, parts };
+}
+
+/** 取某个环节的成分（用于续跑报错定位）；旧产物没有 parts 时返回 null 并退化为原提示 */
+function stageParts(hashes, stage) {
+  const keys = STAGE_PARTS[stage];
+  if (!keys || !hashes.parts) return null;
+  const picked = {};
+  for (const key of keys) picked[key] = hashes.parts[key] === undefined ? null : hashes.parts[key];
+  return picked;
+}
+
+/** 与上次记录的成分比对，列出真正变化的项；无 parts 记录时返回空数组 */
+function changedParts(stage, saved, hashes) {
+  const keys = STAGE_PARTS[stage];
+  const before = saved && saved.parts;
+  if (!keys || !before || !hashes.parts) return [];
+  return keys.filter((key) => (before[key] === undefined ? null : before[key]) !== (hashes.parts[key] === undefined ? null : hashes.parts[key]));
 }
 
 function artifact(out, rel) {
@@ -121,7 +161,11 @@ function openPipeline(out, script, from, { manual = true, skipCheck = false, bgm
 
   function requireStage(stage, requiredFiles = []) {
     const saved = state.stages[stage];
-    if (!saved || (post && stage === 'record' ? saved.capture !== hashes.capture : saved.input !== hashes[stage])) throw new Error('续跑输入已变化或未完成，请从 ' + stage + ' 环节开始。');
+    if (!saved || (post && stage === 'record' ? saved.capture !== hashes.capture : saved.input !== hashes[stage])) {
+      const changed = changedParts(stage, saved, hashes);
+      throw new Error('续跑输入已变化或未完成，请从 ' + stage + ' 环节开始。'
+        + (changed.length ? '本次变化的输入：' + changed.map((key) => PART_LABELS[key] || key).join('、') + '。' : ''));
+    }
     if (!Array.isArray(saved.artifacts) || !saved.artifacts.length) throw new Error('续跑来源记录缺少 ' + stage + ' 产物，请重跑该环节。');
     for (const file of requiredFiles) {
       if (!saved.artifacts.some((a) => a.file === file)) throw new Error('续跑缺少 ' + file + '，请从 ' + stage + ' 环节开始。');
@@ -131,13 +175,24 @@ function openPipeline(out, script, from, { manual = true, skipCheck = false, bgm
     }
   }
 
+  /** 续跑被拒时补一句「哪些环节一起失效、最少回到哪里」，省掉逐级试探 */
+  function staleHint() {
+    const stale = STEPS.filter((stage) => STAGE_PARTS[stage] && state.stages[stage] && state.stages[stage].input !== hashes[stage]);
+    if (stale.length < 2) return '';
+    return '（本次失效环节：' + stale.join(' / ') + '；从最早的 ' + stale[0] + ' 重跑会自动覆盖后面的环节，不必逐个试探。）';
+  }
+
   if (resumable && !post) {
     const index = STEPS.indexOf(from);
-    if (index <= STEPS.indexOf('record') && !skipCheck) requireStage('check');
-    if (['record', 'manual', 'compose'].includes(from)) requireStage('tts', ['tts/manifest.json']);
-    if (['manual', 'compose'].includes(from)) requireStage('record', ['raw.webm', 'session.json', ...(manual ? ['manual/record/steps.json'] : [])]);
-    if (manual && index > STEPS.indexOf('manual')) requireStage('manual');
-    if (from === 'verify' || from === 'cards') requireStage('compose', ['demo-voiced.mp4', 'subs.srt']);
+    try {
+      if (index <= STEPS.indexOf('record') && !skipCheck) requireStage('check');
+      if (['record', 'manual', 'compose'].includes(from)) requireStage('tts', ['tts/manifest.json']);
+      if (['manual', 'compose'].includes(from)) requireStage('record', ['raw.webm', 'session.json', ...(manual ? ['manual/record/steps.json'] : [])]);
+      if (manual && index > STEPS.indexOf('manual')) requireStage('manual');
+      if (from === 'verify' || from === 'cards') requireStage('compose', ['demo-voiced.mp4', 'subs.srt']);
+    } catch (error) {
+      throw new Error(error.message + staleHint());
+    }
   }
 
   function save() {
@@ -157,6 +212,8 @@ function openPipeline(out, script, from, { manual = true, skipCheck = false, bgm
     complete(stage, files) {
       if (!hashes[stage]) return;
       state.stages[stage] = { input: hashes[stage], artifacts: files.map((file) => artifact(out, file)) };
+      const parts = stageParts(hashes, stage);
+      if (parts) state.stages[stage].parts = parts;
       if (stage === 'record') Object.assign(state.stages[stage], { capture: hashes.capture, execution: require('./requests').executionHash(script),
         uploads: require('./uploads').listUploads(script) });
       save();
@@ -171,4 +228,4 @@ function manualArtifacts(out, stage) {
   return [file.replace(/\\/g, '/'), ...new Set(shots.map((file) => path.relative(out, path.resolve(path.dirname(out), file))))];
 }
 
-module.exports = { STEPS, openPipeline, acquireLock, manualArtifacts, verifyCapture, checkAudioWindows };
+module.exports = { STEPS, openPipeline, acquireLock, manualArtifacts, verifyCapture, checkAudioWindows, fingerprints, changedParts };

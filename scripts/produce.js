@@ -20,7 +20,7 @@
 
 const argv = process.argv.slice(2);
 const VALUED = new Set(['--from', '--bgm']);
-const SWITCHES = new Set(['--dry', '--post', '--no-manual', '--skip-check', '--relogin', '--no-login', '--no-cards', '--headed', '--allow-uncovered']);
+const SWITCHES = new Set(['--dry', '--post', '--no-manual', '--skip-check', '--skip-trial', '--allow-trial-failure', '--relogin', '--no-login', '--no-cards', '--headed', '--allow-uncovered']);
 if (argv.includes('--help') || argv.includes('-h')) {
   console.log(`用法：node produce.js [script.yaml] [选项]
   --dry                 只校验、演练及生成演练手册
@@ -31,6 +31,8 @@ if (argv.includes('--help') || argv.includes('-h')) {
   --no-cards            不加片头片尾
   --no-login / --relogin 跳过登录 / 重新登录
   --skip-check          跳过演练，仍需独立提交确认
+  --skip-trial          跳过提交路径试跑（演练走取消分支、测不到提交分支时才用）
+  --allow-trial-failure 试跑未通过仍继续录制（默认中止）
   --headed              显示录制浏览器
   --allow-uncovered     调试时允许清单部分功能未写场景
   --help / -h           显示帮助，不执行任务`);
@@ -126,6 +128,16 @@ if (Number(process.versions.node.split('.')[0]) < 20) {
       console.log('⚠ 旁白里这些词含易错多音字，出片后请抽听；读错的加到 pronounce，读对的加到 pronounceChecked：\n    '
         + script.pronounceHints.join('\n    '));
     }
+    // 收尾动作没写 at 会抢在收尾旁白之前执行（实测抢跑中位 10.8s、最大 23.7s）。
+    // 未写的由 withEnding 默认锚到收尾旁白的最后一个分句；这里只提示还能更准的地方。
+    if (!has('post')) {
+      const loose = script.scenes.flatMap((s) => s.actions.slice(s.expectAt)
+        .filter((a) => a.at === undefined && a.op !== 'wait').map((a) => s.id + ' ' + a.op));
+      if (loose.length) {
+        console.log('⚠ 这些收尾动作没写 at，已按「收尾旁白的最后一个分句」默认对齐；'
+          + '要让画面更贴合旁白，给它们补上宣布该动作的那句话：\n    ' + loose.join('\n    '));
+      }
+    }
     if (script.features) {
       const miss = script.features.uncovered;
       console.log('功能清单：' + path.basename(script.features.file) + '（确认于 ' + script.features.confirmedAt + '）');
@@ -182,6 +194,26 @@ if (Number(process.versions.node.split('.')[0]) < 20) {
     if (!report.ok || report.input !== executionHash(rehearsalScript)) fail('演练来源已变化，请重新开始。');
     fs.copyFileSync(path.join(OUT, 'run-report.json'), path.join(OUT, 'check-report.json'));
     pipeline.complete('check', ['check-report.json', ...(MANUAL && has('dry') ? manualArtifacts(OUT, 'rehearsal') : [])]);
+  }
+
+  // 演练走 rehearsalMode（多为「填完取消」），提交分支从不执行，所以定位、遮挡和动作顺序
+  // 只有真正录制时才会暴露。这里用正式阶段的脚本再跑一次：动作照常执行，写请求被拦截、不落库。
+  // 只在本次真的做了前置校验时跑（续跑 --from record/manual/compose 不必再花这一遍）。
+  if (should('record') && !has('post') && !has('dry') && !has('skip-trial') && !has('skip-check')
+    && STEPS.indexOf(FROM) <= STEPS.indexOf('check')) {
+    const code = run(tag('record') + '  提交路径试跑（写请求被拦截，不落库）', NODE,
+      [path.join(HERE, 'play.js'), SCRIPT_FILE, '--dry', '--trial'], env);
+    const trialFile = path.join(OUT, 'trial-report.json');
+    const trial = fs.existsSync(trialFile) ? JSON.parse(fs.readFileSync(trialFile, 'utf8')) : null;
+    if (code !== 0) {
+      console.log('⚠ 提交路径试跑未通过，正式录制很可能在同一处失败；现场见 output/trial-report.json'
+        + (trial && trial.failure ? '：' + trial.failure.error : ''));
+      if (!has('allow-trial-failure')) fail('提交路径试跑未通过；修好后再录制，或加 --allow-trial-failure 强行继续。');
+    } else if (trial) {
+      const trialed = trial.scenes.filter((s) => s.status === 'trial').length;
+      console.log('提交路径试跑通过：' + trial.scenes.length + ' 个场景可执行，'
+        + trialed + ' 个场景走到提交分支（写请求已拦截）。');
+    }
   }
 
   if (has('dry')) {

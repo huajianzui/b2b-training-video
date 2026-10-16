@@ -54,7 +54,7 @@ async function fixture(t, { rehearsal = 'submit', record = 'submit', badExpect =
 ${upload ? `<input id="file" type="file" hidden onchange="const data=new FormData();data.append('file',this.files[0]);fetch('/upload',{method:'POST',body:data}).then(r=>r.text()).then(t=>result.textContent=t).catch(()=>result.textContent='上传被拦截')">
 <button id="preview" onclick="fetch('/preview',{method:'POST'}).then(r=>r.text()).then(t=>result.textContent=t)">预检</button>` : ''}
 <button id="save" onclick="fetch('/save',{method:'POST'}).then(r=>r.text()).then(t=>{result.textContent=t;panel.hidden=true}).catch(()=>result.textContent='请求被拦截')">保存</button>
-<button id="cancel" onclick="panel.hidden=true;result.textContent='取消完成'">取消</button></section><p id="result"></p>
+<button id="cancel" onclick="panel.hidden=true;result.textContent='取消完成'">取消</button></section><p id="result"></p><span id="hidden-note" hidden>仅内部使用</span>
 ${upload ? `<script>const attachment=document.querySelector('#file');attachment.remove();setTimeout(()=>panel.appendChild(attachment),1000);</script>` : ''}`);
   });
   await new Promise((r) => backend.listen(0, '127.0.0.1', r));
@@ -669,4 +669,64 @@ test('真实 produce 两轮确认、手册与纯后期更正不重放业务，�
   doc.scenes[0].actions[1].fill.text = 'changed operation'; fs.writeFileSync(f.file, YAML.stringify(doc));
   const changed = await f.start('produce.js', ['demo.yaml', '--post']).done;
   assert.notEqual(changed.code, 0); assert.match(changed.log, /操作.*改变/); assert.equal(f.state.visits, visits);
+});
+
+test('截图目录积压超过阈值时整体让位，不做批量删除', { timeout: 60000 }, async (t) => {
+  const f = await fixture(t, { rehearsal: 'cancel', record: 'cancel' }); if (!f) return;
+  const shots = path.join(f.out, 'manual', 'rehearsal', 'shots');
+  fs.mkdirSync(shots, { recursive: true });
+  for (let i = 0; i < 25; i++) fs.writeFileSync(path.join(shots, 'stale-' + i + '.png'), 'old-shot');
+  const result = await f.start('play.js', ['demo.yaml', '--dry', '--shots']).done;
+  assert.equal(result.code, 0, result.log);
+  const moved = fs.readdirSync(path.join(f.out, '_stale')).filter((name) => name.startsWith('shots-rehearsal-'));
+  assert.equal(moved.length, 1, '旧截图目录应整体移到 output/_stale，而不是逐个删除');
+  assert.equal(fs.readdirSync(path.join(f.out, '_stale', moved[0])).length, 25);
+  assert.match(result.log, /整体移至 output\/_stale/);
+  assert.equal(fs.existsSync(path.join(shots, 'stale-0.png')), false, '本轮应使用全新目录重新截图');
+});
+
+test('定位超时时说明元素是「不存在」还是「存在但不可见」', { timeout: 60000 }, async (t) => {
+  const f = await fixture(t, { rehearsal: 'cancel', record: 'cancel' }); if (!f) return;
+  const doc = YAML.parse(fs.readFileSync(f.file, 'utf8'));
+  doc.scenes[0].expect = { visible: { id: 'hidden-note' } };
+  fs.writeFileSync(f.file, YAML.stringify(doc));
+  const result = await f.start('play.js', ['demo.yaml', '--dry']).done;
+  assert.notEqual(result.code, 0, result.log);
+  assert.match(result.log, /找不到可见元素/);
+  assert.match(result.log, /能匹配到元素，但当前不可见/);
+  assert.match(result.log, /hidden-note/);
+});
+
+test('提交路径试跑执行提交分支但不落库', { timeout: 60000 }, async (t) => {
+  // 演练走 rehearsalMode=cancel，submit 分支从不执行；试跑要覆盖它，同时保证业务数据不变。
+  const f = await fixture(t, { rehearsal: 'cancel', record: 'submit' }); if (!f) return;
+  const before = f.state.writes;
+  const result = await f.start('play.js', ['demo.yaml', '--dry', '--trial']).done;
+  assert.equal(result.code, 0, result.log);
+  assert.equal(f.state.writes, before, '试跑不能真正写入业务数据');
+  const report = JSON.parse(fs.readFileSync(path.join(f.out, 'trial-report.json'), 'utf8'));
+  assert.equal(report.mode, 'trial');
+  assert.ok(report.blockedWrites.length, '应记录被拦截的写请求：' + result.log);
+  assert.match(result.log, /走到了提交分支/);
+  // 走到提交点的场景记为 trial，不算失败；也不能污染正式的 run-report
+  assert.equal(report.scenes[0].status, 'trial');
+  assert.equal(report.ok, true);
+  assert.equal(fs.existsSync(path.join(f.out, 'run-report.json')), false, '试跑不写正式运行报告');
+});
+
+test('试跑不发放写许可，未声明的写入仍然拦截', { timeout: 60000 }, async (t) => {
+  // 试跑只放行「已声明的写接口被拦」，不能变成绕过请求保护的后门。
+  const f = await fixture(t, { rehearsal: 'cancel', record: 'submit' }); if (!f) return;
+  const doc = YAML.parse(fs.readFileSync(f.file, 'utf8'));
+  doc.scenes[0].actions.push({ click: { id: 'open' } });
+  doc.scenes[0].actions.push({ click: { css: 'button#save' } });
+  // 把写接口从清单里去掉，改由场景直接触发，模拟未声明写入
+  const features = YAML.parse(fs.readFileSync(f.featureFile, 'utf8'));
+  features.features[0].writeRequests = [{ method: 'POST', url: '/nowhere' }];
+  fs.writeFileSync(f.featureFile, YAML.stringify(features));
+  fs.writeFileSync(f.file, YAML.stringify(doc));
+  const result = await f.start('play.js', ['demo.yaml', '--dry', '--trial']).done;
+  assert.notEqual(result.code, 0, '未声明写入必须仍然失败：' + result.log);
+  assert.match(result.log, /写入未批准或接口未声明/);
+  assert.equal(f.state.writes, 0);
 });

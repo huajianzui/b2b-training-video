@@ -1,0 +1,32 @@
+# 本地演示页的功能清单，配合 script.yaml。
+# 清单的完整字段含义见 features.js 顶部注释；真实系统的清单要按业务代码盘点后再确认。
+# 没有 confirmedAt 的清单不允许出片，这份示例是预先确认过的，可以直接编译。
+module: 订单管理（本地示例）
+script: script.yaml
+generatedBy: 人工盘点
+generatedAt: 2026-10-16
+confirmedAt: 2026-10-16T00:00:00.000Z
+
+environment:
+  name: 本地演示页（无后端，不写任何业务数据）
+  testData: false # 不允许写测试数据，所以两轮的 writeMode / rehearsalMode 都只能是 cancel
+
+pages:
+  - id: list
+    name: 订单管理
+    entry: 左侧菜单「订单管理」按钮
+    route: demo/demo.html
+    files: [demo/demo.html]
+
+features:
+  - id: edit-notes
+    page: list
+    name: 修改订单备注
+    kind: write
+    desc: 打开编辑弹窗修改订单备注，保存后立即在列表页提示已保存
+    how: 点击行内「编辑」打开弹窗，改完备注后点保存；填完取消这一轮只点到「取消」
+    include: true
+    writeMode: cancel # 本地演示页没有后端，不能真实提交
+    rehearsalMode: cancel
+    writeRequests: [] # 真实系统要换成从业务代码里核实的接口；cancel 模式下不需要
+    source: demo/demo.html

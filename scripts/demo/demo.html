@@ -13,8 +13,9 @@
     section { margin: 32px; padding: 32px; background: #fff; border: 1px solid #dce2eb; border-radius: 8px; }
     h1 { margin: 0 0 24px; font-size: 28px; }
     .filters { display: flex; align-items: center; gap: 16px; margin-bottom: 28px; }
-    input, select, button { padding: 12px 16px; border: 1px solid #b8c3d3; border-radius: 5px; font: inherit; }
+    input, select, textarea, button { padding: 12px 16px; border: 1px solid #b8c3d3; border-radius: 5px; font: inherit; }
     input { width: 420px; }
+    textarea { width: 420px; }
     button { cursor: pointer; background: #fff; color: #23304a; }
     button.primary { color: #fff; background: #2f7fd0; border-color: #2f7fd0; }
     nav button { width: 100%; }
@@ -22,10 +23,15 @@
     th, td { padding: 18px; text-align: left; border-bottom: 1px solid #e1e6ef; }
     th { background: #f4f6fa; }
     #result { min-height: 28px; color: #247849; }
+    #edit-dialog { position: fixed; top: 50%; left: 50%; transform: translate(-50%, -50%); width: 520px;
+      padding: 28px; background: #fff; border: 1px solid #dce2eb; border-radius: 8px; box-shadow: 0 12px 40px rgba(35,48,74,.18); }
+    #edit-dialog h2 { margin: 0 0 20px; font-size: 22px; }
+    #edit-dialog label { display: block; margin-bottom: 8px; color: #68758b; font-size: 16px; }
+    #edit-dialog .dialog-actions { display: flex; gap: 12px; margin-top: 20px; }
   </style>
 </head>
 <body>
-  <header><strong>本地订单管理示例</strong><p>虚构页面，仅验证工具与脚本写法；没有后端，不保存业务数据，导出只显示示例提示。</p></header>
+  <header><strong>本地订单管理示例</strong><p>虚构页面，仅验证工具与脚本写法；没有后端，不保存业务数据，导出与保存只显示示例提示。</p></header>
   <main>
     <nav><button class="primary" id="orders">订单管理</button></nav>
     <section id="panel" hidden>
@@ -38,14 +44,25 @@
         <button class="primary" id="btn-search">搜索</button><button id="btn-reset">重置</button>
       </div>
       <button id="btn-export" data-testid="btn-export">导出订单</button>
-      <table><thead><tr><th>订单号</th><th>客户</th><th>状态</th></tr></thead>
-        <tbody><tr><td>SO-20261008-002</td><td>示例客户</td><td>已发货</td></tr></tbody>
+      <table><thead><tr><th>订单号</th><th>客户</th><th>状态</th><th>操作</th></tr></thead>
+        <tbody><tr><td>SO-20261008-002</td><td>示例客户</td><td>已发货</td>
+          <td><button class="edit">编辑</button></td></tr></tbody>
       </table>
       <p id="result" role="status"></p>
     </section>
   </main>
+  <div id="edit-dialog" role="dialog" aria-label="编辑订单备注" hidden>
+    <h2>修改订单备注</h2>
+    <label for="notes">备注</label>
+    <textarea id="notes" name="notes" rows="4"></textarea>
+    <div class="dialog-actions">
+      <button id="btn-save" class="primary">保存</button>
+      <button id="btn-cancel">取消</button>
+    </div>
+  </div>
   <script>
     const panel = document.getElementById('panel'), result = document.getElementById('result');
+    const dialog = document.getElementById('edit-dialog');
     document.getElementById('orders').addEventListener('click', () => { panel.hidden = false; });
     document.getElementById('btn-search').addEventListener('click', () => { result.textContent = '搜索完成'; });
     document.getElementById('btn-reset').addEventListener('click', () => {
@@ -53,6 +70,11 @@
       result.textContent = '筛选条件已重置';
     });
     document.getElementById('btn-export').addEventListener('click', () => { result.textContent = '导出任务已提交'; });
+    for (const b of document.querySelectorAll('.edit')) b.addEventListener('click', () => { dialog.hidden = false; });
+    document.getElementById('btn-cancel').addEventListener('click', () => { dialog.hidden = true; });
+    document.getElementById('btn-save').addEventListener('click', () => {
+      dialog.hidden = true; result.textContent = '备注修改已保存';
+    });
   </script>
 </body>
 </html>

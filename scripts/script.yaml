@@ -1,5 +1,6 @@
 # 本地可运行的格式示例，页面没有后端，不操作任何业务系统。
 # 真实系统登录、只读接口和读音规则示例见 examples/authenticated.yaml，必须替换其占位内容。
+# 写功能场景的完整 ending 写法示例（含收尾动作的 at）见本文件末尾「修改订单备注」场景。
 # 演示脚本 —— 新流水线的唯一输入（格式说明见 script.js 顶部）
 # 出片：node produce.js        只演练：node produce.js --dry
 
@@ -27,12 +28,16 @@ manual:
   title: 订单管理模块操作手册
   version: V1.0
   audience: 客服岗、财务岗
-  overview: 本手册介绍订单管理模块的日常操作，包括按订单号和状态查询订单、重置筛选条件，以及导出订单结果。
+  overview: 本手册介绍订单管理模块的日常操作，包括按订单号和状态查询订单、重置筛选条件、导出订单结果，以及修改订单备注。
   prerequisites:
     - 已获得「订单管理」菜单权限的系统账号
     - 使用 Chrome 或 Edge 浏览器登录系统
   notes:
     - 遇到订单状态异常，请先核对筛选条件，再联系信息中心。
+
+# 功能清单：写功能场景必须先声明清单文件（清单写法见 features.js 顶部注释），由确认页勾选后回写。
+# 查询场景不需要清单，可以整块删掉这几行。这份示例清单已确认，可直接编译。
+features: script.features.yaml
 
 scenes:
   - name: 进入订单管理
@@ -90,3 +95,41 @@ scenes:
     doc:
       text: 需要离线核对订单（如月末对账）时，可以把当前筛选结果导出为文件。
       tips: [导出的是当前筛选条件下的结果，导出前请先确认筛选条件]
+
+  # 写功能 + ending 的完整写法示例：清单关联、基础动作的 at、两种收尾、场景级 hold
+  - name: 修改订单备注（演示 ending 写法）
+    feature: edit-notes
+    hold: 1.6
+    narration: 找到需要修改的订单，点击编辑按钮打开弹窗。在备注栏输入新的备注内容。
+    actions:
+      - goto: demo.html
+      - click: { text: 订单管理 }
+      # 基础动作也要写 at：不写就是「紧接上一步」，容易赶在旁白前面
+      - click: { role: button, name: 编辑 }
+        at: 点击编辑按钮
+      - fill:
+          target: { css: 'textarea[name="notes"]' }
+          text: 客户要求加急发货
+        label: 备注
+        at: 在备注栏输入
+    expect:
+      - visible: { role: button, name: 保存 }
+    # 两种收尾都要写齐（演练按 rehearsalMode、录制按 writeMode 取用）；动作一律带 at
+    ending:
+      cancel:
+        narration: 暂不保存时，点取消关闭这个弹窗。
+        actions:
+          - click: { role: button, name: 取消 }
+            at: 点取消
+        expect:
+          - hidden: { role: dialog, name: 编辑订单备注 }
+      submit:
+        narration: 核对无误后，现在点击保存。修改会立即生效；暂不修改时，可以取消返回。
+        actions:
+          - click: { role: button, name: 保存 }
+            at: 现在点击保存
+        expect:
+          - text: 备注修改已保存
+    doc:
+      text: 订单备注用于记录特殊处理要求，修改后立即生效。
+      tips: [备注仅内部可见，不会显示在客户订单详情中]

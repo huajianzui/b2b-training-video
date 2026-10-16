@@ -62,16 +62,24 @@
 
 | 使用场景 | 执行命令 / 配置 | 说明 |
 | :--- | :--- | :--- |
-| **零后端体验 Demo** | `node play.js script.yaml --dry` | 在 `scripts/` 下运行，使用内置本地虚构订单页体验演练流程（真实系统写法见 [登录与查询示例](scripts/examples/authenticated.yaml)） |
+| **零后端体验 Demo** | `node play.js script.yaml --dry` | 在 `scripts/` 下运行，用内置本地虚构订单页体验演练流程；最后一段是写功能 + `ending` 的完整写法示例（真实系统写法见 [登录与查询示例](scripts/examples/authenticated.yaml)，清单写法见 `scripts/script.features.yaml`） |
 | **环境与语音自检** | `node preflight.js --online` | 检查浏览器、字体和媒体；`--online` 另发送固定测试句验证微软 TTS 接口 |
 | **微软配音报 403** | 设置 `EDGE_TTS_SERVICE=msedge` | 显式验证兼容端点，不修改全局 Python 包 |
 | **只改文案/配音（免重录）** | `node produce.js <脚本.yaml> --post` | 复用经校验的原始录像，不重放业务操作（新音频超出原画面时间窗时拒绝） |
+| **改完脚本续跑** | `node produce.js <脚本.yaml> --from <环节>` | 按 [SKILL.md §5](SKILL.md) 的起点表选最小环节：只改旁白用 `tts`，只调 `at` 用 `record`，动了动作/断言用 `check`。被拒时会列出真正变化的输入与最早应回到的环节 |
+| **异常中断后续跑** | 先删 `output/.produce.lock` | 共用同一 output 的流水线必须串行；锁提示写明原进程已退出时才可删 |
+| **只调试个别场景** | `node play.js <脚本.yaml> --dry --scenes 9-20` | 与 `--shots` 互斥、只回放指定的一段；不能替代 `produce` 的 check 环节（`--dry` 时 check 还要截图并产出演练手册素材） |
+| **验证提交分支（不写数据）** | `node play.js <脚本.yaml> --dry --trial` | 用正式阶段的脚本执行：动作照常跑，写请求被拦截、不落库。演练走取消分支、测不到提交分支，试跑补的就是这一段；`produce` 在录制前会自动跑一次（`--skip-trial` 可跳过） |
+| **收尾动作抢在旁白之前** | 给 `ending` 的动作补 `at` | 不写 `at` 的收尾动作会在旁白念到之前就执行；没写的由工具默认锚到收尾旁白的最后一个分句，`produce` 会列出这些位置 |
+| **`ending` 整块不生效** | 给该场景补 `feature:` | `ending` 只在关联了已确认清单的场景里展开，没写 `feature` 时会被整块忽略（现在会直接报错，不再静默跳过） |
+| **`hold` 调了没用** | 写到场景上，不写进 `ending` | `hold` 只认场景级的那一个；`ending.<模式>.hold` 会被忽略（现在会直接报错） |
+| **录制一开始就失败** | 移走 `output/manual/<阶段>/shots` | 宿主对单轮批量删除设确认阈值时（报错含 `SAFE_DELETE_BULK_CONFIRM_REQUIRED`）会在清理步骤失败，与脚本无关；工具已自动改为整体移到 `output/_stale/` |
 | **更换背景音乐** | 从 `compose` 阶段重跑 | 背景音乐纳入合成来源校验，音乐增删或内容变化从 `compose` 重跑即可 |
 | **单独调试登录流程** | `node login.js <脚本.yaml>` | 仅验证登录单项；人工登录完成后在本地确认页点击“我已登录完成 · 继续” |
 | **仅验证演练阶段** | `script.js` / `login.js` 加 `--rehearsal` | `produce --dry` 会自动选择演练阶段 |
 | **安装/更新项目工具包** | `node <Skill目录>/scripts/install-runtime.js <项目>/.training-video` | 在项目内安装或更新工具包（含 `tools/`、本地示例及登录示例），保留已有脚本和产物 |
 
-*补充说明：多个脚本共用同一把输出锁，请勿同时运行多个脚本；多角色演示请使用独立工具目录和登录态，依赖可通过 `PW_WORKSPACE` 复用。阶段耗时记录在 `output/timing.jsonl`，真实提交等待在运行报告中单列。*
+*补充说明：多个脚本共用同一把输出锁，请勿同时运行多个脚本；多角色演示请使用独立工具目录和登录态，依赖可通过 `PW_WORKSPACE` 复用，演示数据也要按角色隔离（独立项目或独立库），否则新建类操作会互相占用名额、先出片的一方还会改写后一方的记录。**耗时量级**：录制是实时屏幕捕获，录制时长约等于旁白总长（片长多少就花多少时间）；演练不按旁白节奏等待，实测约为片长的 1/5，一次成功出片约为片长的 1.5 倍，**每失败重录一次再加约 1 倍片长**——所以重点是别让录制失败，而不是少演练。阶段耗时记录在 `output/timing.jsonl`，真实提交等待在运行报告中单列。*
 
 ---
 

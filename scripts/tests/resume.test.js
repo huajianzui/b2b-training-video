@@ -161,6 +161,34 @@ test('只修改片头从 cards 开始时保留匹配正片，并编译当前片�
   assert.equal(JSON.parse(fs.readFileSync(path.join(f.out, 'script.json'), 'utf8')).intro.speech, '新片头');
 });
 
+test('续跑被拒时列出真正变化的输入与同批失效的环节，避免逐级试探', (t) => {
+  const f = fixture(t);
+  const { openPipeline } = require(path.join(f.root, 'pipeline'));
+  const reopen = (from) => {
+    try { openPipeline(f.out, loadScript(f.file), from, { manual: false }); return null; } catch (error) { return error.message; }
+  };
+
+  // 动作变化落在 check 的指纹里（check 不含旁白），报错要说清变了哪一类、哪些环节一起失效
+  fs.writeFileSync(f.file, yaml());
+  seed(f);
+  fs.writeFileSync(f.file, yaml().replace('actions: []', 'actions:\n      - wait: 1'));
+  const actions = reopen('tts');
+  assert.ok(actions, '动作变化后从 tts 续跑必须被拒绝');
+  assert.match(actions, /从 check 环节/);
+  assert.match(actions, /本次变化的输入：.*动作/);
+  assert.match(actions, /本次失效环节：check/);
+
+  // 只改旁白不影响 check，到 tts 才失效，且只报「旁白文本」
+  fs.writeFileSync(f.file, yaml());
+  seed(f);
+  fs.writeFileSync(f.file, yaml().replace('查看第三行。', '查看第四行。'));
+  const speech = reopen('record');
+  assert.ok(speech, '旁白变化后从 record 续跑必须重新配音');
+  assert.match(speech, /从 tts 环节/);
+  assert.match(speech, /本次变化的输入：旁白文本/);
+  assert.doesNotThrow(() => openPipeline(f.out, loadScript(f.file), 'tts', { manual: false }), '只改旁白时 check 仍有效，可以从 tts 起跑');
+});
+
 test('环境变量切换登录角色后不能使用先前角色的产物', (t) => {
   const f = fixture(t);
   const old = process.env.TRAINING_TEST_USER;

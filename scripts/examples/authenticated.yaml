@@ -1,6 +1,7 @@
 # 真实系统的配置写法示例，不可原样执行。
 # 必须核对并替换 URL、选择器和只读接口；账号口令仅通过环境变量提供。
 # 不在这个文件里批准业务提交；写功能还需已确认清单、两轮选择及逐轮数据确认。
+# 写功能场景的完整 ending 写法（含收尾动作的 at）见 script.yaml 最后一个场景，功能清单写法见 script.features.yaml。
 title: 登录与查询配置示例
 url: https://replace-with-your-test-system.invalid/orders
 adapters: [element-plus]
