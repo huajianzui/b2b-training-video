@@ -67,22 +67,56 @@ async def main():
     todo = [s for s in script["scenes"] if s["narration"]]
     print(f"共 {len(todo)} 句旁白，音色 {voice}，语速 {rate}")
 
-    hits = 0
-    for s in todo:
+    sem = asyncio.Semaphore(max(1, int(os.environ.get("TTS_CONCURRENCY", "5"))))
+    inflight = {}
+
+    async def ensure_clip(spoken, clip):
+        if clip.exists():
+            return True
+        task = inflight.get(clip)
+        if task is None:
+            async def _run():
+                async with sem:
+                    if not clip.exists():
+                        await synth(spoken, clip, voice, rate)
+            task = asyncio.create_task(_run())
+            inflight[clip] = task
+        await task
+        return False
+
+    async def process_scene(s):
         spoken = s.get("speech") or s["narration"]  # 按读音规则改写过的配音文本，字幕仍用 narration
         key = hashlib.sha1(f"{voice}|{rate}|{spoken}".encode("utf-8")).hexdigest()[:16]
         clip = CACHE / f"{key}.mp3"
-        if clip.exists():
+        cached = await ensure_clip(spoken, clip)
+        dur = await asyncio.to_thread(duration_of, clip)
+        if dur is None:
+            sys.exit(f"读不到时长：{clip}")
+        return s["id"], clip, dur, spoken, cached
+
+    # 顺带预热片头片尾默认参数配音到 tts-cache，后期合成卡片时直接命中缓存
+    card_tasks = []
+    for pos in ("intro", "outro"):
+        card = script.get(pos)
+        if isinstance(card, dict):
+            spoken = card.get("speech") or card.get("narration")
+            if spoken and not card.get("duration"):
+                key = hashlib.sha1(f"{voice}|{rate}|{spoken}".encode("utf-8")).hexdigest()[:16]
+                card_tasks.append(ensure_clip(spoken, CACHE / f"{key}.mp3"))
+
+    results = await asyncio.gather(*(process_scene(s) for s in todo))
+    if card_tasks:
+        await asyncio.gather(*card_tasks, return_exceptions=True)
+
+    hits = 0
+    for sid, clip, dur, spoken, cached in results:
+        if cached:
             hits += 1
             mark = "缓存"
         else:
-            await synth(spoken, clip, voice, rate)
             mark = "合成"
-        dur = duration_of(clip)
-        if dur is None:
-            sys.exit(f"读不到时长：{clip}")
-        manifest["scenes"][s["id"]] = {"file": str(clip.relative_to(HERE)).replace("\\", "/"), "dur": round(dur, 3), "speech": spoken}
-        print(f"  [{mark}] {s['id']}  {dur:5.2f}s  {spoken}")
+        manifest["scenes"][sid] = {"file": str(clip.relative_to(HERE)).replace("\\", "/"), "dur": round(dur, 3), "speech": spoken}
+        print(f"  [{mark}] {sid}  {dur:5.2f}s  {spoken}")
 
     (OUT / "tts").mkdir(parents=True, exist_ok=True)
     (OUT / "tts" / "manifest.json").write_text(json.dumps(manifest, ensure_ascii=False, indent=2), "utf-8")

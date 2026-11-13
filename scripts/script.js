@@ -131,10 +131,16 @@ function normAction(raw, where, baseUrl, baseDir, recordedUploads) {
 const speakWeight = (s) => [...s].reduce((n, ch) => n + (/[，。；：、！？,.;:!?]/.test(ch) ? 2 : /\s/.test(ch) ? 0 : 1), 0);
 
 /** at：旁白里的一个短语，动作等旁白念到这里再做；换算成旁白进度比例 cue（0~1） */
-function resolveCue(a, narration, timing, where) {
-  if (a.at === undefined) return;
+function resolveCue(a, narration, timing, where, minPos = 0, autoStart = false) {
+  if (a.at === undefined) {
+    if (a.cue === undefined && autoStart && minPos > 0 && timing === 'with' && narration) {
+      a.cue = speakWeight(narration.slice(0, minPos)) / (speakWeight(narration) || 1);
+    }
+    return;
+  }
   if (timing === 'before') throw new ScriptError(where + '：timing 为 before 时旁白先念完，不能用 at');
-  const pos = narration.indexOf(a.at);
+  let pos = narration.indexOf(a.at, minPos);
+  if (pos < 0 && minPos > 0) pos = narration.indexOf(a.at);
   if (pos < 0) throw new ScriptError(where + '：at「' + a.at + '」在旁白里找不到');
   a.cue = speakWeight(narration.slice(0, pos)) / (speakWeight(narration) || 1);
 }
@@ -251,8 +257,10 @@ function withEnding(s, end) {
   const d = s.doc || {};
   const e = end.doc || {};
   const list = (v) => (v === undefined ? [] : Array.isArray(v) ? v : [v]);
-  const narration = [s.narration, end.narration].filter(Boolean).join('');
-  const anchor = defaultEndingAnchor(end.narration);
+  const bodyNarr = s.narration ? String(s.narration).trim() : '';
+  const endNarr = end.narration ? String(end.narration).trim() : '';
+  const narration = [bodyNarr, endNarr].filter(Boolean).join('');
+  const anchor = defaultEndingAnchor(endNarr);
   const anchorAt = anchor ? narration.lastIndexOf(anchor) : -1;
   const actions = list(end.actions).map((a) => {
     if (anchorAt >= 0 && a && typeof a === 'object' && !Array.isArray(a) && !Object.hasOwn(a, 'at')) {
@@ -262,6 +270,7 @@ function withEnding(s, end) {
   });
   return Object.assign({}, s, {
     narration,
+    bodyNarrationLen: bodyNarr && endNarr ? bodyNarr.length : 0,
     actions: list(s.actions).concat(actions),
     expectAt: list(s.actions).length,
     endExpect: list(end.expect),
@@ -300,9 +309,10 @@ function applyFeature(s, featById, where, stage, continued) {
 /**
  * 读音规则：TTS 读不准的多音字，配音时换成读音唯一的同音字，字幕和手册仍用原文。
  * edge-tts 免费接口不接受自定义 SSML（phoneme 标签无效），只能靠改写送去合成的文字。
+ * 建议按具体词组替换，避免单字全局替换误伤其他词（如「行」误伤「先行」「执行」）：
  *   pronounce:
- *     行: { say: 航, except: [执行, 进行] }   这个字一律读作「航」，除外词里的保持原样
- *     重新: 虫新                              整词替换
+ *     已选行: 已选航
+ *     重新: 虫新
  *   pronounceChecked: [调整, 预校验]          抽听过、TTS 读对了的词，不再提示（内置 BUILTIN_CHECKED 之外追加；没听过不许写）
  * 规则按键长从长到短依次处理，返回 (旁白) => 配音文本
  *
@@ -416,11 +426,20 @@ function normalize(doc, file, { stage = 'record', recordedUploads = [] } = {}) {
     const timing = s.timing || 'with';
     if (timing !== 'with' && timing !== 'before') throw new ScriptError(where + '：timing 只能是 with 或 before');
     const narration = s.narration ? String(s.narration).trim() : '';
+    let prevAt = -1;
     const actions = (s.actions || []).map((a, j) => {
       const w = where + ' 第 ' + (j + 1) + ' 个动作';
       const act = normAction(a, w, url, baseDir, recordedUploads);
       if (act.prepare && !(s.preparationRequests || []).length) throw new ScriptError(w + '：本阶段尚未批准上传/预检副作用');
-      resolveCue(act, narration, timing, w);
+      const isEndStart = s.expectAt !== undefined && j === s.expectAt;
+      const inEnding = s.expectAt !== undefined && j >= s.expectAt;
+      resolveCue(act, narration, timing, w, inEnding ? (s.bodyNarrationLen || 0) : 0, isEndStart);
+      if (act.at !== undefined && act.cue !== undefined) {
+        if (act.cue < prevAt - 1e-6) {
+          throw new ScriptError(w + '：at「' + act.at + '」在旁白中的位置早于前一个动作的 at，会导致音画顺序倒挂');
+        }
+        prevAt = act.cue;
+      }
       return act;
     });
     return {

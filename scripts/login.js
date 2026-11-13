@@ -703,7 +703,7 @@ async function ensureLoggedIn(project, opts = {}) {
 
   const hasAuth = fs.existsSync(cfg.storagePath);
 
-  if (hasAuth && cfg.reuse && !opts.force) {
+  if (hasAuth && (cfg.reuse || opts.trust) && !opts.force) {
     if (opts.trust) {
       log('[登录] 沿用本轮已确认有效的登录态。');
       return { enabled: true, storageState: cfg.storagePath, reused: true, storagePath: cfg.storagePath };

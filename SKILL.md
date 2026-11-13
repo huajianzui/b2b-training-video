@@ -30,7 +30,12 @@ node preflight.js
 - 403 时停止重复握手，可显式设 `EDGE_TTS_SERVICE=msedge` 后探测微软兼容端点 `api.msedgeservices.com`；默认 `library` 沿用已装 edge-tts。不改全局包、代理、TLS 或时钟，不静默换提供方。
 - `script.yaml` 配有本地虚构订单页面。真实登录、只读 POST、读音写法看 `examples/authenticated.yaml`，替换占位地址、选择器和接口；各工具支持 `--help`。
 
-从项目配置找前后端地址，先探测端口是否已监听，已运行就复用（不要重启用户正在用的服务）。需要看页面时用 `node tools/snap.js <登录态|-> <地址> <快照名>` 拍快照。找账号密码登录入口及测试账号；凭据引用环境变量，不写入源码、清单或报告。
+从项目配置找前后端地址，先探测端口是否已监听，已运行就复用（不要重启用户正在用的服务）；**若本地 dev 服务正处于并行开发热更新（HMR）中，应另起独立静态预览与独立后端端口**，避免录屏被热更新刷新打断。需要看页面时用 `node tools/snap.js <登录态|-> <地址> <快照名>` 拍快照。找账号密码登录入口及测试账号；凭据引用环境变量，不写入源码、清单或报告。
+
+**录制前准备加速（强制并行原则）**：
+- **三路并行盘点**：收到目标模块后，同时并行推进（或派发并行只读子代理）：① 前端路由、页面组件、按钮与弹窗条件；② 后端 Controller/API 读写语义（整理 `readOnlyRequests` 与 `writeRequests`）；③ 服务健康检查、`preflight.js` 与各角色测试账号业务数据探查，合并输出 `<模块>.features.yaml` 与 `output/brief.md`。
+- **同会话批量快照**：探查真实页面时，同一角色的多个独立页面用 `snap.js` 的 `["parallel", [["name", "url"], ...]]` 在单次浏览器会话中多标签页并发抓取，避免逐页冷启动 Chromium；多角色的 `login.js` 与 `snap.js` 跨角色目录并行执行。
+- **多角色全流程并行**：多角色分篇交付时，各角色目录（如 `role-admin`、`role-pm`、`role-member`）互不共享 `output/` 与锁，其场景编写、局部 `--scenes` 调试、全量演练、TTS 合成、录制与后期合成应并行推进（仅当两角色修改同一条无序业务数据时错开对应写入场景）。
 
 ## 2. 盘点后集中确认
 
@@ -81,8 +86,10 @@ node app/server.js
 
 ```powershell
 node script.js <脚本> --rehearsal
+# 局部调试只跑新增或失败的接续组，同时可后台并行跑 py -3 tts.py 预热配音缓存
 node play.js <脚本> --dry --scenes <范围>
-# 正式录制前不加 --rehearsal 再校验正式阶段
+# 全量演练优先用 produce.js --dry 记录 check 阶段，通过后直接 node produce.js <脚本> --from tts 避免重复全量演练
+node produce.js <脚本> --dry
 ```
 
 按未验证或已变更操作安排演练，不在分批提交后又无条件全量提交。范围扩展到完整接续组。`--allow-uncovered` 只用于局部调试，不能证明原批准范围完成。
@@ -134,7 +141,7 @@ node play.js <脚本> --dry --scenes <范围>
 - 正式手册来自 `output/manual/record/`，演练素材在 `manual/rehearsal/`；核对正文、步骤、截图和业务口径。布局验收与文件完整性检查分别说明。
 - 对照配音前的教学核对检查实际成片与手册：入口、范围、复杂交互和异常处理确实讲到；缺口如实列入报告，工程测试通过不能代替内容验收。
 - 交付同名 SRT；`output/subs.srt` 是保留的正片输入，不是带片头成品字幕。
-- `pronounce` 只改配音，字幕保留原文；`pronounceChecked` 只记录确实抽听的词。集中抽听，更正优先纯后期。
+- `pronounce` 只改配音，字幕保留原文；禁止对「行、重、调」等高频多音字做单字全局替换，应按具体词组替换并核对 `script.json` 的 `speech` 字段；`pronounceChecked` 只记录确实抽听的词。集中抽听，更正优先纯后期。
 - 交付 MP4、DOCX、SRT 和 `output/review-result.md`。按原范围记录批准目标、实际阶段/收尾与完成类型；取消目标完成不等于实际提交，未完成不通过取消勾选抹掉。
 - 报告区分业务系统、Skill、环境、Agent，列影响、最小复现、证据、状态和建议；不编造 bug/审美结论，不宣称全面 QA。
 - 比较片长、阶段耗时、人工等待、确认次数和重试；阶段耗时见 `output/timing.jsonl`，提交等待见运行报告。清理无依赖的本轮临时副本，保留成品与最小恢复证据。

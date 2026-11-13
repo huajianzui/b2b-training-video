@@ -42,6 +42,8 @@
 
 import argparse
 import asyncio
+import concurrent.futures
+import hashlib
 import json
 import os
 import re
@@ -372,12 +374,23 @@ def make_card(position, spec, common, tmp_dir, out_dir):
 
     # 时长：优先用显式指定，否则按配音长度自动推算
     tts_reused = None
+    tts_cache = out_dir / "tts-cache"
+    can_cache = common.get("volume", "+0%") == "+0%" and common.get("pitch", "+0Hz") == "+0Hz"
+    if narration and can_cache:
+        cache_key = hashlib.sha1(f"{common['voice']}|{common['rate']}|{spoken}".encode("utf-8")).hexdigest()[:16]
+        cached_mp3 = tts_cache / f"{cache_key}.mp3"
+        if cached_mp3.exists():
+            tts_reused = cached_mp3
     if spec.get("duration"):
         dur, n_dur = float(spec["duration"]), None
     elif narration:
-        tts_reused = tmp_dir / (position + "-tts.mp3")
-        asyncio.run(synth_tts(spoken, tts_reused, common["voice"], common["rate"],
-                              common["volume"], common["pitch"]))
+        if tts_reused is None or not tts_reused.exists():
+            tts_reused = tmp_dir / (position + "-tts.mp3")
+            asyncio.run(synth_tts(spoken, tts_reused, common["voice"], common["rate"],
+                                  common["volume"], common["pitch"]))
+            if can_cache:
+                tts_cache.mkdir(parents=True, exist_ok=True)
+                shutil.copy2(tts_reused, tts_cache / f"{cache_key}.mp3")
         n_dur = duration_of(tts_reused)
         if n_dur is None:
             die("无法读取配音时长")
@@ -403,11 +416,14 @@ def make_card(position, spec, common, tmp_dir, out_dir):
 
     card_v = tmp_dir / (position + "-video.mp4")
     card_a = tmp_dir / (position + "-audio.wav")
-    build_card_video(dur, title, subtitle, footer, accent, bg1, bg2,
-                     common["watermark"], card_v)
-    build_card_audio(dur, spoken, common["voice"], common["rate"],
-                     common["volume"], common["pitch"], card_a, tmp_dir,
-                     tts=tts_reused)
+    with concurrent.futures.ThreadPoolExecutor(max_workers=2) as pool:
+        fut_v = pool.submit(build_card_video, dur, title, subtitle, footer, accent, bg1, bg2,
+                            common["watermark"], card_v)
+        fut_a = pool.submit(build_card_audio, dur, spoken, common["voice"], common["rate"],
+                            common["volume"], common["pitch"], card_a, tmp_dir,
+                            tts=tts_reused)
+        fut_v.result()
+        fut_a.result()
 
     card = out_dir / (position + "-card.mp4")
     mux_card(card_v, card_a, card, dur)
@@ -617,7 +633,8 @@ def main():
         "watermark": args.watermark,
         "steps": steps,
         "captions": captions,
-        "video_dur": duration_of(args.attach) if args.attach and Path(args.attach).exists() else None,
+        "video_dur": (mp4_timing(args.attach)["videoDuration"] if usable(NODE_EXE) else duration_of(args.attach))
+                     if args.attach and Path(args.attach).exists() else None,
     }
 
     print("=" * 68)

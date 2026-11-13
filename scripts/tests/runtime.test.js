@@ -52,7 +52,7 @@ pw.chromium.launch = options => launch({ ...options, executablePath: process.env
   for (const sample of ['script.yaml', 'examples/script.yaml']) {
     const result = await run('play.js', [sample, '--dry']); assert.equal(result.code, 0, result.log);
     const report = JSON.parse(fs.readFileSync(path.join(f.root, 'output', 'run-report.json')));
-    assert.equal(report.ok, true); assert.equal(report.scenes.length, 5); assert.deepEqual(report.writes, []);
+    assert.equal(report.ok, true); assert.equal(report.scenes.length, 6); assert.deepEqual(report.writes, []);
   }
   const subset = await run('play.js', ['script.yaml', '--dry', '--scenes', '2']);
   assert.equal(subset.code, 0, subset.log);

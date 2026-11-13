@@ -15,6 +15,7 @@
  *   ["press", "Escape"]
  *   ["wait", 1500]
  *   ["snap", "detail"]                     存 output/_snap/detail.png / .aria.yaml，并打印当前地址
+ *   ["parallel", [["list", "http://.../list"], ["detail", "http://.../detail"]]]  同会话多标签页并行拍多页快照
  *   ["eval", "document.title"]             在页面里求值并打印结果
  * 产物：output/_snap/
  */
@@ -34,9 +35,24 @@ if (process.argv.includes('--help') || process.argv.includes('-h')) {
   process.exit(0);
 }
 
+async function smartGoto(p, url) {
+  await p.goto(url, { waitUntil: 'domcontentloaded' });
+  await p.waitForLoadState('networkidle', { timeout: 2500 }).catch(() => {});
+}
+
+async function captureSnap(p, name) {
+  await p.waitForTimeout(250);
+  const [, aria] = await Promise.all([
+    p.screenshot({ path: path.join(OUT, name + '.png') }),
+    p.locator('body').ariaSnapshot(),
+  ]);
+  fs.writeFileSync(path.join(OUT, name + '.aria.yaml'), aria, 'utf8');
+  console.log('[snap] ' + name + '  ' + p.url());
+}
+
 (async () => {
   if (!authFile || !target) throw new Error(USAGE);
-  const steps = /^https?:\/\//.test(target)
+  const steps = /^(?:https?|file):\/\//.test(target)
     ? [['goto', target], ['snap', snapName || 'page']]
     : JSON.parse(fs.readFileSync(target, 'utf8').replace(/^\uFEFF/, ''));
   fs.mkdirSync(OUT, { recursive: true });
@@ -48,21 +64,28 @@ if (process.argv.includes('--help') || process.argv.includes('-h')) {
   page.on('dialog', (d) => d.dismiss().catch(() => {}));
 
   for (const [i, [op, a, b]] of steps.entries()) {
-    const where = '第 ' + (i + 1) + ' 步 ' + op + ' ' + (a || '');
+    const where = '第 ' + (i + 1) + ' 步 ' + op + ' ' + (typeof a === 'string' ? a : '');
     try {
-      if (op === 'goto') await page.goto(a, { waitUntil: 'networkidle' });
+      if (op === 'goto') await smartGoto(page, a);
       else if (op === 'click') await page.locator(a).filter({ visible: true }).first().click({ timeout: 8000 });
       else if (op === 'fill') await page.locator(a).filter({ visible: true }).first().fill(String(b), { timeout: 8000 });
       else if (op === 'press') await page.keyboard.press(a);
       else if (op === 'wait') await page.waitForTimeout(Number(a) || 1000);
       else if (op === 'eval') console.log('[eval] ' + JSON.stringify(await page.evaluate(a)));
-      else if (op === 'snap') {
-        await page.waitForTimeout(800);
-        await page.screenshot({ path: path.join(OUT, a + '.png') });
-        fs.writeFileSync(path.join(OUT, a + '.aria.yaml'), await page.locator('body').ariaSnapshot(), 'utf8');
-        console.log('[snap] ' + a + '  ' + page.url());
+      else if (op === 'snap') await captureSnap(page, a);
+      else if (op === 'parallel' && Array.isArray(a)) {
+        await Promise.all(a.map(async ([name, url]) => {
+          const tab = await context.newPage();
+          tab.on('dialog', (d) => d.dismiss().catch(() => {}));
+          try {
+            await smartGoto(tab, url);
+            await captureSnap(tab, name);
+          } finally {
+            await tab.close().catch(() => {});
+          }
+        }));
       } else throw new Error('不认识的动作');
-      if (op === 'click' || op === 'goto') await page.waitForTimeout(1000);
+      if (op === 'click' || op === 'goto') await page.waitForTimeout(350);
     } catch (e) {
       console.error('[失败] ' + where + '：' + e.message.split('\n')[0]);
       await page.screenshot({ path: path.join(OUT, '_fail.png') }).catch(() => {});

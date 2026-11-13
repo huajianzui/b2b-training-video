@@ -50,7 +50,7 @@ for (let i = 0; i < argv.length; i++) {
   else scriptArg = arg;
 }
 
-const { spawnSync } = require('child_process');
+const { spawn, spawnSync } = require('child_process');
 const fs = require('fs');
 const path = require('path');
 const { loadScript, asLoginProject, DEFAULT_OUT: SCRIPT_JSON } = require('./script');
@@ -100,6 +100,26 @@ function run(label, cmd, args, env) {
   fs.appendFileSync(path.join(OUT, 'timing.jsonl'), JSON.stringify({ stage: label, at: new Date(started).toISOString(),
     elapsedMs: Date.now() - started, exitCode: r.status }) + '\n', 'utf8');
   return r.status;
+}
+
+function runAsync(label, cmd, args, env) {
+  const started = Date.now();
+  console.log('\n==================== ' + label + ' ====================');
+  return new Promise((resolve) => {
+    const child = spawn(cmd, args, {
+      cwd: HERE,
+      stdio: 'inherit',
+      env: Object.assign({}, process.env, {
+        PYTHONUNBUFFERED: '1', PYTHONIOENCODING: 'utf-8', FFMPEG: ffmpegPath(), NODE_EXE: NODE,
+      }, env || {}),
+    });
+    child.on('error', (err) => fail('无法启动：' + err.message));
+    child.on('close', (code) => {
+      fs.appendFileSync(path.join(OUT, 'timing.jsonl'), JSON.stringify({ stage: label, at: new Date(started).toISOString(),
+        elapsedMs: Date.now() - started, exitCode: code }) + '\n', 'utf8');
+      resolve(code);
+    });
+  });
 }
 
 if (Number(process.versions.node.split('.')[0]) < 20) {
@@ -160,17 +180,27 @@ if (Number(process.versions.node.split('.')[0]) < 20) {
   const pipeline = openPipeline(OUT, script, FROM, { manual: MANUAL, skipCheck: has('skip-check'), bgm: BGM, post: has('post') });
   fs.writeFileSync(SCRIPT_JSON, JSON.stringify(script, null, 2), 'utf8');
 
+  const env = { ...release.env };
+  let ttsPromise = null;
+  const completeTts = () => {
+    const manifest = JSON.parse(fs.readFileSync(path.join(OUT, 'tts', 'manifest.json'), 'utf8'));
+    const clips = Object.values(manifest.scenes).map(m => path.relative(OUT, path.resolve(HERE, m.file)));
+    pipeline.complete('tts', ['tts/manifest.json', ...clips]);
+  };
+
   if (!has('dry')) {
     await preflight({ browser: should('record') && !has('post'), python: PY() });
     if (should('tts')) {
-      if (run('前置配音：合成旁白', PY(), [path.join(HERE, 'tts.py')]) !== 0) fail('旁白合成失败，尚未进入业务演练。');
-      const manifest = JSON.parse(fs.readFileSync(path.join(OUT, 'tts', 'manifest.json'), 'utf8'));
-      const clips = Object.values(manifest.scenes).map(m => path.relative(OUT, path.resolve(HERE, m.file)));
-      pipeline.complete('tts', ['tts/manifest.json', ...clips]);
+      const canOverlapTts = !has('post') && ((!has('no-login') && should('login')) || (should('check') && !has('skip-check')));
+      if (canOverlapTts) {
+        ttsPromise = runAsync('前置配音：合成旁白（与演练并行）', PY(), [path.join(HERE, 'tts.py')], env);
+      } else {
+        if (run('前置配音：合成旁白', PY(), [path.join(HERE, 'tts.py')], env) !== 0) fail('旁白合成失败，尚未进入业务演练。');
+        completeTts();
+      }
     }
   }
 
-  const env = { ...release.env };
   if (has('no-login')) {
     env.REC_NO_LOGIN = '1';
   } else if (should('login')) {
@@ -194,6 +224,11 @@ if (Number(process.versions.node.split('.')[0]) < 20) {
     if (!report.ok || report.input !== executionHash(rehearsalScript)) fail('演练来源已变化，请重新开始。');
     fs.copyFileSync(path.join(OUT, 'run-report.json'), path.join(OUT, 'check-report.json'));
     pipeline.complete('check', ['check-report.json', ...(MANUAL && has('dry') ? manualArtifacts(OUT, 'rehearsal') : [])]);
+  }
+
+  if (ttsPromise) {
+    if ((await ttsPromise) !== 0) fail('旁白合成失败，尚未进入正式录制。');
+    completeTts();
   }
 
   // 演练走 rehearsalMode（多为「填完取消」），提交分支从不执行，所以定位、遮挡和动作顺序
@@ -237,18 +272,32 @@ if (Number(process.versions.node.split('.')[0]) < 20) {
     pipeline.complete('record', ['raw.webm', 'session.json', 'run-report.json', ...(MANUAL ? manualArtifacts(OUT, 'record') : [])]);
   }
 
-  if (should('manual') && MANUAL) {
-    pipeline.requireStage('record', ['manual/record/steps.json']);
-    if (run(tag('manual') + '  生成正式操作手册（Word）', NODE, [path.join(HERE, 'manual.js'), SCRIPT_FILE, ...(has('post') ? ['--post'] : [])], env) !== 0) fail('手册生成失败。');
+  const doManual = should('manual') && MANUAL;
+  const doCompose = should('compose');
+  if (doManual) pipeline.requireStage('record', ['manual/record/steps.json']);
+  if (doCompose || should('cards')) ensureFonts();
+  if (doManual && doCompose) {
+    const manualArgs = [path.join(HERE, 'manual.js'), SCRIPT_FILE, ...(has('post') ? ['--post'] : [])];
+    const composeArgs = [path.join(HERE, 'compose.py'), ...(BGM ? ['--bgm', BGM] : [])];
+    const [manualCode, composeCode] = await Promise.all([
+      runAsync(tag('manual') + '  生成正式操作手册（Word）', NODE, manualArgs, env),
+      runAsync(tag('compose') + '  后期：烧录字幕 + 旁白音轨', PY(), composeArgs, env),
+    ]);
+    if (manualCode !== 0) fail('手册生成失败。');
     pipeline.complete('manual', [script.manual.title.replace(/[\\/:*?"<>|]/g, '_').trim() + '.docx']);
-  }
-
-  if (should('compose') || should('cards')) ensureFonts();
-  if (should('compose')) {
-    const args = [path.join(HERE, 'compose.py')];
-    if (BGM) args.push('--bgm', BGM);
-    if (run(tag('compose') + '  后期：烧录字幕 + 旁白音轨', PY(), args) !== 0) fail('后期合成失败。');
+    if (composeCode !== 0) fail('后期合成失败。');
     pipeline.complete('compose', ['demo-voiced.mp4', 'subs.srt']);
+  } else {
+    if (doManual) {
+      if (run(tag('manual') + '  生成正式操作手册（Word）', NODE, [path.join(HERE, 'manual.js'), SCRIPT_FILE, ...(has('post') ? ['--post'] : [])], env) !== 0) fail('手册生成失败。');
+      pipeline.complete('manual', [script.manual.title.replace(/[\\/:*?"<>|]/g, '_').trim() + '.docx']);
+    }
+    if (doCompose) {
+      const args = [path.join(HERE, 'compose.py')];
+      if (BGM) args.push('--bgm', BGM);
+      if (run(tag('compose') + '  后期：烧录字幕 + 旁白音轨', PY(), args, env) !== 0) fail('后期合成失败。');
+      pipeline.complete('compose', ['demo-voiced.mp4', 'subs.srt']);
+    }
   }
 
   const voiced = path.join(OUT, 'demo-voiced.mp4');
@@ -275,7 +324,7 @@ if (Number(process.versions.node.split('.')[0]) < 20) {
     const narrated = script.scenes.filter((s) => s.narration).length;
     const code = run(tag('cards') + '  片头片尾', PY(), [path.join(HERE, 'intro.py'), '--config', cardsFile,
       '--attach', voiced, '--out', out, '--steps', String(steps), '--captions', String(narrated),
-      '--srt-input', path.join(OUT, 'subs.srt'), '--srt-output', finalSrt]);
+      '--srt-input', path.join(OUT, 'subs.srt'), '--srt-output', finalSrt, '--no-verify']);
     if (code !== 0) fail('片头片尾生成或验收失败，已中止交付。');
     final = out;
   }

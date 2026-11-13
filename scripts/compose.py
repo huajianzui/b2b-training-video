@@ -15,6 +15,7 @@
 """
 
 import argparse
+import concurrent.futures
 import json
 import os
 import re
@@ -50,13 +51,18 @@ def ff(args, cwd=None):
 # ---------------------------------------------------------------- 字幕
 
 def split_sentences(text):
-    """先按句末标点断句，过长的句子再按逗号顿号切，保证一行放得下"""
+    """先按句末标点断句，过长的句子再按逗号顿号切；仍超长时尽量在虚词边界切分，避免硬切拆词"""
     parts = [p for p in re.split(r"(?<=[。！？；!?;])", text) if p.strip()]
     out = []
     for p in parts:
         p = p.strip()
         while len(p) > SUB_MAX_CHARS:
-            cut = max((m.end() for m in re.finditer(r"[，、,：:]", p[:SUB_MAX_CHARS + 1])), default=SUB_MAX_CHARS)
+            cut = max((m.end() for m in re.finditer(r"[，、,：:]", p[:SUB_MAX_CHARS + 1])), default=0)
+            if not cut:
+                # 在常见虚词边界切分，避免把双音节/多音节词从中间劈开
+                after = max((m.end() for m in re.finditer(r"[的和与或并而时后则就]", p[:SUB_MAX_CHARS + 1]) if m.end() >= 8), default=0)
+                before = max((m.start() for m in re.finditer(r"[在把将对向从可能即由给让]", p[:SUB_MAX_CHARS + 1]) if m.start() >= 8), default=0)
+                cut = max(after, before) or SUB_MAX_CHARS
             out.append(p[:cut])
             p = p[cut:].strip()
         if p:
@@ -140,16 +146,21 @@ def main():
     srt.write_text(build_srt(cues), "utf-8")
     print("字幕：" + str(srt.relative_to(HERE)))
 
-    print("第一步：转码并烧录字幕..." if cues else "第一步：无旁白字幕，转码视频...")
+    print("第一/二步（并行）：转码烧录字幕 + 渲染旁白音轨..." if cues else "第一/二步（并行）：无旁白字幕，转码视频 + 渲染音轨...")
     silent = OUT / "demo-silent.mp4"
+    voice = OUT / "voice.wav"
     # subtitles 滤镜里的 Windows 盘符路径很难转义，切到 output 目录用相对路径
     vf = ["-vf", f"subtitles=subs.srt:fontsdir=../assets:force_style='{SUB_STYLE}'"] if cues else []
-    ff(["-i", "raw.webm"] + vf + ["-c:v", "libx264", "-preset", "medium", "-crf", "20",
-        "-pix_fmt", "yuv420p", "-an", "-movflags", "+faststart", silent.name], cwd=str(OUT))
-
-    print("第二步：渲染旁白音轨...")
-    voice = OUT / "voice.wav"
-    render_voice(cues, clips, video_dur, voice)
+    with concurrent.futures.ThreadPoolExecutor(max_workers=2) as pool:
+        fut_video = pool.submit(
+            ff,
+            ["-i", "raw.webm"] + vf + ["-c:v", "libx264", "-preset", "medium", "-crf", "20",
+             "-pix_fmt", "yuv420p", "-an", "-movflags", "+faststart", silent.name],
+            cwd=str(OUT),
+        )
+        fut_voice = pool.submit(render_voice, cues, clips, video_dur, voice)
+        fut_video.result()
+        fut_voice.result()
 
     print("第三步：合流...")
     out = OUT / "demo-voiced.mp4"
