@@ -115,6 +115,10 @@ async function installRequestGuard(context, { readOnlyRequests = [], writeReques
       await route.abort('blockedbyclient');
       return;
     }
+    if (method === 'GET' && String(request.headers().accept || '').includes('text/event-stream')) {
+      await route.continue();
+      return;
+    }
     let target = url, verb = method, body = request.postDataBuffer();
     let headers = request.headers();
     try {
