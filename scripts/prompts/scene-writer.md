@@ -19,15 +19,11 @@
 
 1. **先看页面再写（同会话批量快照）。** 用页面快照工具探查：`node tools/snap.js {{auth}} <步骤文件.json>`（用法见 `tools/snap.js` 开头注释）。需要探查多个独立页面时，优先在单个步骤文件中使用 `["parallel", [["list", "http://.../list"], ["detail", "http://.../detail"]]]` 同会话多标签页并行抓取，不要每看一页冷启动一次浏览器。它保存截图和无障碍结构（`output/_snap/*.aria.yaml`），定位要以无障碍结构里真实的角色和名称为准，不要凭代码猜。步骤文件放在 `output/steps/`。
 2. **写场景**，追加到 {{script}} 的 scenes 下。
-<<<<<<< HEAD
-3. **演练**：先校验 `node script.js {{script}} --rehearsal`，只对未验证或已变更的操作安排演练；避免分批提交后再重复全量写入。局部调试用 `node play.js {{script}} --dry --scenes 3`，工具补齐接续组；它与 `--shots` 互斥、只回放指定的一段，省的是调脚本的时间，**不能替代 `produce` 的 check 环节**（`produce --dry` 的 check 还要截图并产出演练手册素材）。演练按 `rehearsalMode` 走，**提交分支不执行**；要验证提交分支用 `node play.js {{script}} --dry --trial`（动作照常跑，写请求被拦截、不落库），`produce` 在录制前会自动跑一次。演练成本约为片长的 1/5，不必为省时间跳过。实际写入必须等待本轮人工确认，页面信号会自动继续，不要求用户再回消息。
-=======
 3. **快速演练与旁白预热**：
-   - 先校验 `node script.js {{script}} --rehearsal`。
-   - 调试或修复单个场景时，**必须**用 `node play.js {{script}} --dry --scenes <范围>` 只跑失败/新增的接续组，禁止每次修改后从第 1 幕全量重跑。
-   - 在进行 `--dry` 演练的同时，可在后台并行启动 `py -3 tts.py` 预热 `output/tts-cache`（含场景旁白与片头片尾配音）。
-   - 全量演练优先运行 `node produce.js {{script}} --dry`（生成 `pipeline.json` 的 `check` 记录与演练手册），通过后直接用 `node produce.js {{script}} --from tts` 进入正式录制，避免正式出片时重复跑第二遍全量演练。实际写入必须等待本轮人工确认，页面信号会自动继续，不要求用户再回消息。
->>>>>>> 1ba3614 (perf & fix: parallelize pipeline and tighten audio-visual/doc/polyphone guardrails)
+   - 先校验 `node script.js {{script}} --rehearsal`，只对未验证或已变更的操作安排演练。
+   - 调试或修复单个场景时，使用 `node play.js {{script}} --dry --scenes <范围>` 只跑失败/新增的接续组（工具补齐接续组；它与 `--shots` 互斥、**不能替代 `produce` 的 check 环节**），同时可在后台并行跑 `py -3 tts.py` 预热 `output/tts-cache`。
+   - 演练按 `rehearsalMode` 走，提交分支不执行；要验证提交分支用 `node play.js {{script}} --dry --trial`（动作照常跑，写请求被拦截、不落库，`produce` 录制前会自动跑一次）。
+   - 全量演练优先运行 `node produce.js {{script}} --dry`（生成 `check` 记录与演练手册），通过后直接用 `node produce.js {{script}} --from tts` 进入正式录制，避免重复跑第二遍全量演练。实际写入必须等待本轮人工确认，页面信号会自动继续，不要求用户再回消息。
 4. 失败时保留 `output/run-report.json` 和必要现场，先查明原因/当前数据状态。按准备单的阻塞策略停止、跳过依赖功能或补充文字讲解；没有新证据不盲重试，不通过取消勾选抹掉原批准范围。细则见 `prompts/production-brief.md`。
 
 ## 安全
