@@ -270,6 +270,8 @@ function withEnding(s, end) {
   });
   return Object.assign({}, s, {
     narration,
+    bodyNarrationText: bodyNarr,
+    endNarrationText: endNarr,
     bodyNarrationLen: bodyNarr && endNarr ? bodyNarr.length : 0,
     actions: list(s.actions).concat(actions),
     expectAt: list(s.actions).length,
@@ -319,10 +321,21 @@ function applyFeature(s, featById, where, stage, continued) {
  * 选替换字：挑只有一个读音、声调相同的常用字（行 háng → 航，校 jiào → 叫）；
  * 找不到合适的字时，改写旁白避开（第三行 → 第三条）。
  */
+const BUILTIN_PRONOUNCE = {
+  跨行: '跨航', 任意行: '任意航', 每行: '每航', 本行: '本航', 首行: '首航', 末行: '末航',
+  勾选行: '勾选航', 汇总行: '汇总航', 待补码行: '待补码航', 已选行: '已选航', 全部行: '全部航',
+  多行: '多航', 空白行: '空白航', 各行: '各航', 上一行: '上一航', 下一行: '下一航', 行内: '航内',
+  查重: '察虫', 重排: '虫排', 重算: '虫算', 重置: '虫置', 重提: '虫提', 重新: '虫新', 重复: '虫复',
+  调平: '条平', 调整: '条整', 调休: '条休', 微调: '微条', 协调: '协条', 调减: '条减', 调增: '条增',
+  弹窗: '谈窗',
+};
+
 function makeSpeech(raw) {
-  if (raw === undefined || raw === null) return (t) => t;
-  if (typeof raw !== 'object' || Array.isArray(raw)) throw new ScriptError('pronounce 要写成「字或词: 读作」的映射');
-  const rules = Object.entries(raw).map(([key, v]) => {
+  if (raw !== undefined && raw !== null && (typeof raw !== 'object' || Array.isArray(raw))) {
+    throw new ScriptError('pronounce 要写成「字或词: 读作」的映射');
+  }
+  const merged = Object.assign({}, BUILTIN_PRONOUNCE, raw || {});
+  const rules = Object.entries(merged).map(([key, v]) => {
     if (typeof v === 'string') return { key, say: v, except: [] };
     if (!v || typeof v !== 'object' || typeof v.say !== 'string') {
       throw new ScriptError('pronounce「' + key + '」：要写成 读作 或 { say: 读作, except: [例外词] }');
@@ -341,8 +354,33 @@ function makeSpeech(raw) {
 // TTS 在业务旁白里容易读错的多音字。只用来提示抽听，不自动改
 const RISKY_POLYPHONES = '行重长调还数量空差便处传种率降藏校参转弹卡占称';
 // 已在默认音色（edge-tts 晓晓）下由人抽听确认读对的词；只有真的听过才能往这里加，换音色后要重新确认
-const BUILTIN_CHECKED = ['参与', '卡片', '行数', '数量', '数据', '系数', '总数', '工作量', '批量', '名称', '重置', '重新',
-  '清空', '空行', '空白', '占比', '弹出', '还可', '还没', '处理', '方便', '调整', '流转', '差不多', '校验'];
+const BUILTIN_CHECKED = ['参与', '参加', '参照', '调度', '卡片', '行数', '数量', '数据', '系数', '总数', '工作量', '批量',
+  '衡量', '余量', '全量', '量化', '任务量', '名称', '重置', '重新', '清空', '空行', '空白', '占比', '弹出', '还可', '还没',
+  '处理', '方便', '调整', '流转', '转正', '差不多', '差额', '进度差', '校验', '执行', '进行'];
+
+function narrationWarnings(scenes) {
+  const warnings = [];
+  for (const s of scenes) {
+    const body = s.bodyNarrationText || '';
+    const end = s.endNarrationText || '';
+    if (body && end) {
+      const clicks = [...new Set((body.match(/点击[\u4e00-\u9fa5]{2,8}/g) || []))];
+      const dup = clicks.filter((c) => end.includes(c));
+      if (dup.length) {
+        warnings.push(s.id + '：正文与收尾旁白重复出现「' + dup.join('、') + '」，会造成先念一遍再做一遍的重复感');
+      }
+    }
+    const text = s.narration || '';
+    const longClauses = text.split(/[，。；！？、]/).map((c) => c.trim()).filter((c) => c.replace(/[^\u4e00-\u9fa5]/g, '').length > 24);
+    if (longClauses.length) {
+      warnings.push(s.id + '：分句过长（>24字），易导致字幕硬切或 TTS 断句异常：「' + longClauses[0].slice(0, 16) + '…」');
+    }
+    if (/解锁后续/.test(text)) {
+      warnings.push(s.id + '：含易粘连词组「解锁后续」，建议改为「即可创建…」或加逗号断开');
+    }
+  }
+  return warnings;
+}
 
 /**
  * 旁白里含易错多音字、又没被 pronounce 规则或 pronounceChecked 覆盖的地方，按字分组：
@@ -445,6 +483,9 @@ function normalize(doc, file, { stage = 'record', recordedUploads = [] } = {}) {
     return {
       id,
       name: s.name ? String(s.name) : '',
+      switchUser: s.switchUser ? String(s.switchUser) : '',
+      bodyNarrationText: s.bodyNarrationText || '',
+      endNarrationText: s.endNarrationText || '',
       features: asList(s.feature),
       continue: !!raw.continue,
       narration,
@@ -496,7 +537,8 @@ function normalize(doc, file, { stage = 'record', recordedUploads = [] } = {}) {
     login: doc.login || { enabled: false },
     intro,
     outro,
-    pronounceHints: pronounceHints(narrations, doc.pronounce, BUILTIN_CHECKED.concat(doc.pronounceChecked || []).map(String)),
+    pronounceHints: pronounceHints(narrations, Object.assign({}, BUILTIN_PRONOUNCE, doc.pronounce || {}), BUILTIN_CHECKED.concat(doc.pronounceChecked || []).map(String)),
+    narrationWarnings: narrationWarnings(scenes),
     manual: {
       title: String((doc.manual && doc.manual.title) || String(doc.title || '操作演示').replace(/演示$/, '') + '手册'),
       version: doc.manual && doc.manual.version ? String(doc.manual.version) : '',
@@ -563,6 +605,7 @@ if (require.main === module) {
     console.log('脚本校验通过：' + s.scenes.length + ' 个场景，' + ops + ' 个动作');
     console.log('已写入 ' + path.relative(HERE, DEFAULT_OUT));
     if (s.pronounceHints.length) console.log('⚠ 含易错多音字、待抽听的词：\n    ' + s.pronounceHints.join('\n    '));
+    if (s.narrationWarnings && s.narrationWarnings.length) console.log('⚠ 旁白断句与重复提示：\n    ' + s.narrationWarnings.join('\n    '));
   } catch (e) {
     console.error('[脚本错误] ' + e.message);
     process.exit(1);

@@ -103,13 +103,17 @@ async function installRequestGuard(context, { readOnlyRequests = [], writeReques
     if (/%(?:2f|5c|00)/i.test(new URL(url).pathname)) return false;
     // HEAD 可能复用服务端 GET 处理器；已知 GET 写路径也不能以 HEAD 绕过。
     const declaredWrite = writeRequests.some((r) => matches(r, method === 'HEAD' ? 'GET' : method, url, { ignoreSearch: true }));
-    return approved.some((r) => matches(r, method, url))
+    return approved.some((r) => matches(r, method, url, { ignoreSearch: r.method !== 'GET' && new URL(r.url).search === '' }))
       || (!declaredWrite && (SAFE_METHODS.has(method) || readOnlyRequests.some((r) => matches(r, method, url))));
   }
   await context.route('**/*', async (route) => {
     const request = route.request(), method = request.method(), url = request.url();
     if (new URL(url).protocol === 'file:' && method === 'GET') { await route.continue(); return; }
     const approved = grant.slice(); // 已发起的请求不能借用下一场景的许可。
+    if (method === 'PUT' && /^\/api\/v1\/realtime\/connections\/[^/]+\/subscriptions$/.test(new URL(url).pathname)) {
+      await route.continue();
+      return;
+    }
     if (!allowed(method, url, approved)) {
       blocked(method, url);
       await route.abort('blockedbyclient');
@@ -124,7 +128,7 @@ async function installRequestGuard(context, { readOnlyRequests = [], writeReques
     try {
       for (let redirects = 0; ; redirects++) {
         if (!allowed(verb, target, approved)) { blocked(verb, target); await route.abort('blockedbyclient'); return; }
-        const entry = approved.some((r) => matches(r, verb, target)) ? { request: describe(verb, target), outcome: 'unknown' } : null;
+        const entry = approved.some((r) => matches(r, verb, target, { ignoreSearch: r.method !== 'GET' && new URL(r.url).search === '' })) ? { request: describe(verb, target), outcome: 'unknown' } : null;
         if (entry) writes.push(entry);
         // route.continue 只拦截重定向链的首跳，故在发送每一跳之前检查策略。
         const response = redirects === 0 ? await route.fetch({ maxRedirects: 0 })

@@ -148,6 +148,9 @@ if (Number(process.versions.node.split('.')[0]) < 20) {
       console.log('⚠ 旁白里这些词含易错多音字，出片后请抽听；读错的加到 pronounce，读对的加到 pronounceChecked：\n    '
         + script.pronounceHints.join('\n    '));
     }
+    if (script.narrationWarnings && script.narrationWarnings.length) {
+      console.log('⚠ 旁白断句与重复提示：\n    ' + script.narrationWarnings.join('\n    '));
+    }
     // 收尾动作没写 at 会抢在收尾旁白之前执行（实测抢跑中位 10.8s、最大 23.7s）。
     // 未写的由 withEnding 默认锚到收尾旁白的最后一个分句；这里只提示还能更准的地方。
     if (!has('post')) {

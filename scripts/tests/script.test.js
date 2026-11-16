@@ -115,3 +115,17 @@ test('cue 是内部派生字段，写进场景直接报错', (t) => {
   f.save();
   assert.throws(() => loadScript(f.file), /cue.*内部派生字段/);
 });
+
+test('内置多音字规则默认生效且保护调度，同时检测正文与收尾重复话术并保留 switchUser', (t) => {
+  const f = endingFixtureRaw(t,
+    { submit: { narration: '确认无误后点击保存完成提交。', actions: [{ click: { text: '确定' }, at: '点击保存' }] } },
+    { switchUser: 'test_pm', narration: '周任务调度表格按人员跨行展示，点击待补码行查重并调整后点击保存。' });
+  const compiled = loadScript(f, { stage: 'record' });
+  const scene = compiled.scenes[0];
+  assert.equal(scene.switchUser, 'test_pm');
+  assert.ok(scene.speech.includes('周任务调度'), '调度不应被误改为条度：' + scene.speech);
+  assert.ok(scene.speech.includes('跨航展示'), '跨行应默认映射为跨航：' + scene.speech);
+  assert.ok(scene.speech.includes('待补码航'), '待补码行应默认映射为待补码航：' + scene.speech);
+  assert.ok(scene.speech.includes('察虫并条整'), '查重/调整应默认映射：' + scene.speech);
+  assert.ok(compiled.narrationWarnings.some((w) => w.includes('重复出现「点击保存」')), '应提示正文与收尾重复点击话术');
+});

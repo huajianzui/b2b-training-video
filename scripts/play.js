@@ -521,6 +521,31 @@ async function main() {
       report.confirmationWaitMs = Date.now() - confirmationStarted;
     }
     browser = await chromium.launch({ headless: !HEADED, args: ['--disable-blink-features=AutomationControlled'] });
+    const roleAuthCache = {};
+    const switchUsers = [...new Set(script.scenes.map((s) => s.switchUser).filter(Boolean))];
+    if (switchUsers.length && script.login && script.login.url) {
+      const tmpCtx = await browser.newContext({ viewport: CFG.viewport, locale: 'zh-CN', serviceWorkers: 'block' });
+      const tmpPage = await tmpCtx.newPage();
+      const pw = (script.login.password && String(script.login.password)) || 'dev-password';
+      for (const uname of switchUsers) {
+        await tmpPage.goto(script.login.url, { waitUntil: 'domcontentloaded' });
+        await tmpPage.fill(script.login.usernameSelector || 'input[autocomplete="username"]', uname);
+        await tmpPage.fill(script.login.passwordSelector || 'input[type="password"]', pw);
+        await tmpPage.click(script.login.submitSelector || 'button.admin-submit');
+        await tmpPage.waitForSelector('.ovm-sidebar, body', { timeout: 15000 });
+        await wait(400);
+        roleAuthCache[uname] = await tmpPage.evaluate(() => {
+          const entries = {};
+          for (let i = 0; i < localStorage.length; i++) {
+            const k = localStorage.key(i);
+            if (k) entries[k] = localStorage.getItem(k);
+          }
+          return entries;
+        });
+      }
+      await tmpCtx.close();
+      console.log('[无感切角] 已预取 ' + switchUsers.length + ' 个角色凭证：' + switchUsers.join(', '));
+    }
     fs.rmSync(videoDir, { recursive: true, force: true });
     context = await browser.newContext({ viewport: CFG.viewport, deviceScaleFactor: 1, locale: 'zh-CN', serviceWorkers: 'block',
       recordVideo: DRY ? undefined : { dir: videoDir, size: CFG.viewport },
@@ -541,6 +566,14 @@ async function main() {
     if (SHOTS) resetShots();
   for (const scene of script.scenes) {
     guard.grant([]);
+    if (scene.switchUser && roleAuthCache[scene.switchUser]) {
+      await page.evaluate((entries) => {
+        localStorage.removeItem('ovm_user_id');
+        for (const [k, v] of Object.entries(entries)) {
+          if (k !== 'ovm_user_id' && v !== null) localStorage.setItem(k, v);
+        }
+      }, roleAuthCache[scene.switchUser]);
+    }
     const start = now();
     const narr = durs[scene.id] || 0;
     const audioAt = start + CFG.lead;
