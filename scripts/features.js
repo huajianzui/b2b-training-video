@@ -9,8 +9,9 @@
  *   generatedBy: 人工盘点 | gemini-2.5-pro
  *   generatedAt: 2026-10-09
  *   confirmedAt: ~                       确认页点「确认」后写入；为空时不允许出片
- *   environment:                         录制用的环境（出片前和用户确认）
+ *   environment:                         录制用的环境（出片前和用户确认，按三级阶梯降级）
  *     name: 本地开发环境                  仅供制作确认，不进入业务旁白
+ *     tier: isolated                     isolated（隔离库+洁净黄金数据+快照回滚真演练）| shared-test（共享测试库+视图筛选降噪+真实提交）| restricted（受限环境+只演示不触发写接口）
  *     testData: true                     用户是否允许写测试数据；每轮提交还要确认本轮数据准备
  *   pages:
  *     - id: list
@@ -28,6 +29,7 @@
  *       permission: order:manage
  *       when: 显示条件
  *       requires: 演示前提（要什么数据 / 文件）
+ *       dependsOn: []                    强状态前置功能 id（如审批依赖新建提交）；被依赖的写功能在演练或录制选 cancel 时会阻断后续演示
  *       blocked: 当前演示不了的原因        有值时默认不勾选
  *       minor: true                      操作过于简单，默认不勾选
  *       shared: 查询                      由公共组件提供的通用操作（查询 / 表格 / 弹窗…），已在《系统通用操作》里讲过，默认不勾选
@@ -70,6 +72,7 @@ const { normalizeRequests, assertDisjoint } = require('./requests');
 
 const KINDS = ['read', 'write'];
 const WRITE_MODES = ['cancel', 'submit'];
+const ENV_TIERS = ['isolated', 'shared-test', 'restricted'];
 
 class FeatureError extends Error {}
 
@@ -93,7 +96,11 @@ function normalize(raw, file) {
   const pageIds = new Set(pages.map((p) => p.id));
   const ids = new Set();
   const env = raw.environment || {};
-  const environment = { name: str(env.name), testData: env.testData === true };
+  const tier = str(env.tier);
+  if (tier && !ENV_TIERS.includes(tier)) {
+    throw new FeatureError(where + '：environment.tier 只能是 ' + ENV_TIERS.join(' / '));
+  }
+  const environment = { name: str(env.name), testData: env.testData === true, ...(tier ? { tier } : {}) };
   const defaultWriteMode = environment.testData ? 'submit' : 'cancel';
   const features = (raw.features || []).map((f, i) => {
     const w = where + ' 第 ' + (i + 1) + ' 个功能';
@@ -125,6 +132,7 @@ function normalize(raw, file) {
     const blocked = str(f.blocked);
     const minor = !!f.minor;
     const shared = str(f.shared);
+    const dependsOn = [...new Set(strList(f.dependsOn).map((d) => d.trim()).filter(Boolean))];
     return {
       id,
       page: str(f.page),
@@ -135,6 +143,7 @@ function normalize(raw, file) {
       permission: str(f.permission),
       when: str(f.when),
       requires: str(f.requires),
+      dependsOn,
       blocked,
       minor,
       shared,
@@ -150,6 +159,12 @@ function normalize(raw, file) {
       status: str(f.status),
     };
   });
+  for (const f of features) {
+    for (const depId of f.dependsOn) {
+      if (depId === f.id) throw new FeatureError(where + '「' + f.id + '」：dependsOn 不能依赖自身');
+      if (!ids.has(depId)) throw new FeatureError(where + '「' + f.id + '」：dependsOn「' + depId + '」不在 features 清单里');
+    }
+  }
   return {
     file: path.resolve(file),
     module: str(raw.module),
@@ -168,6 +183,7 @@ function loadFeatures(file) {
 }
 
 function validateDecisions(manifest, { requireRehearsal = true } = {}) {
+  const byId = new Map(manifest.features.map((f) => [f.id, f]));
   for (const f of manifest.features.filter((f) => f.include && f.kind === 'write' && f.status !== 'removed')) {
     if (f.blocked && (f.preparation.rehearsal || f.preparation.record)) throw new FeatureError('阻塞功能不能批准准备写入：' + f.name);
     if (requireRehearsal && !f.rehearsalMode) throw new FeatureError('功能「' + f.name + '」缺少 rehearsalMode：请在确认页单独选择演练取消或真实提交。');
@@ -175,6 +191,22 @@ function validateDecisions(manifest, { requireRehearsal = true } = {}) {
       if (f.blocked || f.submitRestriction) throw new FeatureError('功能「' + f.name + '」不能 submit：' + (f.submitRestriction || f.blocked));
       if (!manifest.environment.testData) throw new FeatureError('环境不允许写测试数据（environment.testData 不是 true），功能「' + f.name + '」不能 submit。');
       if (!f.writeRequests.length) throw new FeatureError('功能「' + f.name + '」缺少 writeRequests：核对业务代码后填写真实提交接口，再重新确认。');
+    }
+  }
+  for (const f of manifest.features.filter((f) => f.include && f.status !== 'removed' && (f.dependsOn || []).length)) {
+    for (const depId of f.dependsOn) {
+      const dep = byId.get(depId);
+      if (!dep || !dep.include || dep.status === 'removed') {
+        throw new FeatureError('功能「' + f.name + '」依赖前置功能「' + (dep ? dep.name : depId) + '」，请同时勾选该前置功能，或取消勾选「' + f.name + '」。');
+      }
+      if (dep.kind === 'write') {
+        if (requireRehearsal && dep.rehearsalMode === 'cancel' && (!f.kind || f.kind === 'read' || f.rehearsalMode === 'submit')) {
+          throw new FeatureError('功能「' + f.name + '」依赖前置功能「' + dep.name + '」提交后的数据，但「' + dep.name + '」在演练阶段选了「填完取消」，会导致演练无法走通后续链路；请将前置功能演练也设为 submit（配合隔离库快照还原或双套测试数据），或将后续功能演练改为 cancel。');
+        }
+        if (dep.writeMode === 'cancel' && (f.kind === 'read' || f.writeMode === 'submit')) {
+          throw new FeatureError('功能「' + f.name + '」依赖前置功能「' + dep.name + '」提交后的数据，但「' + dep.name + '」在正式录制选了「填完取消」，会导致正式录制链路中断；请将前置功能录制设为 submit，或取消勾选「' + f.name + '」。');
+        }
+      }
     }
   }
 }
@@ -276,6 +308,7 @@ function mergeFresh(savedFile, freshFile) {
     features: features.map((f) => {
       const o = { id: f.id, page: f.page, name: f.name, kind: f.kind };
       for (const k of ['desc', 'how', 'permission', 'when', 'requires', 'blocked', 'shared', 'source', 'submitRestriction']) if (f[k]) o[k] = f[k];
+      if (f.dependsOn && f.dependsOn.length) o.dependsOn = f.dependsOn;
       if (f.minor) o.minor = true;
       o.include = f.include;
       if (f.kind === 'write') {

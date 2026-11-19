@@ -181,3 +181,33 @@ test('实际 WS 按进程变量精确匹配，特殊字符不扩大查询范围�
   assert.ok(!JSON.stringify({rules,violations:guard.violations}).includes('value'));
   assert.equal(f.counts.save,0); await context.close();
 });
+
+test('readOnlyRequests 显式声明只读 PUT（含动态路径段）可放行，未声明的 PUT 仍被拦截', { timeout: 60000 }, async (t) => {
+  let subPut = 0;
+  const f = await fixture(t, (req, res) => {
+    if (req.method === 'PUT' && req.url === '/api/v1/realtime/connections/c-123/subscriptions') {
+      subPut++; res.setHeader('Content-Type', 'application/json'); res.end('{"ok":true}'); return true;
+    }
+    if (req.method === 'PUT' && req.url === '/api/v1/other-put') {
+      res.setHeader('Content-Type', 'application/json'); res.end('{"ok":true}'); return true;
+    }
+    return false;
+  });
+  if (!f) return;
+  const ro = normalizeRequests([
+    { method: 'PUT', url: '/api/v1/realtime/connections/{id}/subscriptions' },
+  ], f.page.url(), 'ro', { readOnly: true });
+  const context = await f.context.browser().newContext({ serviceWorkers: 'block' });
+  const guard = await installRequestGuard(context, { readOnlyRequests: ro, writeRequests: f.writes, pageUrl: f.page.url() });
+  const page = await context.newPage();
+  await page.goto(f.page.url());
+  const sendPut = (route) => page.evaluate(async (r) => {
+    try { return await (await fetch(r, { method: 'PUT' })).json(); } catch { return { blocked: true }; }
+  }, route);
+  assert.deepEqual(await sendPut('/api/v1/realtime/connections/c-123/subscriptions'), { ok: true });
+  assert.equal(subPut, 1);
+  assert.doesNotThrow(() => guard.assert());
+  assert.deepEqual(await sendPut('/api/v1/other-put'), { blocked: true });
+  assert.throws(() => guard.assert(), /写入未批准或接口未声明/);
+  await context.close();
+});

@@ -141,6 +141,11 @@
 const $ = (s) => document.querySelector(s);
 const esc = (s) => String(s == null ? '' : s).replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
 const MODE = { cancel: '最终取消', submit: '最终提交' };
+const TIER_LABEL = {
+  isolated: '第一级：隔离库（洁净基线数据 + 快照回滚全链路真演练）',
+  'shared-test': '第二级：共享测试库（视图筛选降噪 + 真实提交演示）',
+  restricted: '第三级：受限环境（只演示不触发写接口）',
+};
 
 let file = new URLSearchParams(location.search).get('f') || '';
 let data = null;
@@ -196,7 +201,8 @@ function render() {
   $('#module').textContent = data.module + (data.generatedBy ? ' · 盘点：' + data.generatedBy + (data.generatedAt ? '（' + data.generatedAt + '）' : '') : '');
   $('#bar').style.display = '';
   $('#globalBulk').innerHTML = bulkBar('', '全部已选功能');
-  $('#environment').textContent = '环境：' + (data.environment.name || '未命名') + ' · '
+  $('#environment').textContent = '环境：' + (data.environment.name || '未命名')
+    + (data.environment.tier ? '（' + (TIER_LABEL[data.environment.tier] || data.environment.tier) + '）' : '') + ' · '
     + (data.environment.testData ? '允许写入测试数据（每轮提交前再次确认）' : '不允许写入测试数据，仅可取消');
   const rows = data.pages.map((p) => {
     const feats = data.features.filter((f) => f.page === p.id);
@@ -218,6 +224,7 @@ function render() {
           f.permission && '权限：' + esc(f.permission),
           f.when && '显示条件：' + esc(f.when),
           f.requires && '演示前提：' + esc(f.requires),
+          f.dependsOn && f.dependsOn.length && '前置依赖：' + esc(f.dependsOn.join('、')),
           f.source && '<span title="源码位置">' + esc(f.source) + '</span>',
         ].filter(Boolean).map((x) => '<div>' + x + '</div>').join('');
         return '<tr class="' + (f.include ? '' : 'off') + (f.status === 'removed' ? ' removed' : '') + '">'

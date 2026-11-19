@@ -730,3 +730,93 @@ test('试跑不发放写许可，未声明的写入仍然拦截', { timeout: 600
   assert.match(result.log, /写入未批准或接口未声明/);
   assert.equal(f.state.writes, 0);
 });
+
+test('switchUser 无感切角支持环境变量密码、RequestGuard 保护及 excludeStorageKeys', { timeout: 60000 }, async (t) => {
+  const f = await fixture(t, { rehearsal: 'cancel', record: 'cancel', account: { TRAINING_SWITCH_PWD: 'secret-switch-pwd' } });
+  if (!f) return;
+
+  const loginHtml = [
+    '<!doctype html><meta charset="utf-8"><title>登录</title>',
+    '<form id="f">',
+    '<input id="u" name="username" type="text"><input id="p" type="password">',
+    '<button type="submit">登录</button></form>',
+    '<script>',
+    'document.getElementById("f").addEventListener("submit", async (e) => {',
+    '  e.preventDefault();',
+    '  const u = document.getElementById("u").value;',
+    '  const p = document.getElementById("p").value;',
+    '  const r = await fetch("/api/login", { method: "POST", body: u + ":" + p });',
+    '  const d = await r.json();',
+    '  if (d.ok) {',
+    '    localStorage.setItem("role_token", d.user);',
+    '    localStorage.setItem("legacy_uid", "old-1");',
+    '    document.body.innerHTML = "<div id=\\"app-shell\\">已登录</div>";',
+    '  }',
+    '});',
+    '</script>',
+  ].join('');
+
+  const pageHtml = [
+    '<!doctype html><meta charset="utf-8"><title>业务页</title>',
+    '<div id="who"></div>',
+    '<script>document.getElementById("who").textContent = (localStorage.getItem("role_token") || "none") + "|" + (localStorage.getItem("legacy_uid") || "clean");</script>',
+  ].join('');
+
+  const logins = [];
+  const authServer = http.createServer((req, res) => {
+    if (req.url === '/login-page') { res.setHeader('Content-Type', 'text/html'); res.end(loginHtml); return; }
+    if (req.url === '/app-page') { res.setHeader('Content-Type', 'text/html'); res.end(pageHtml); return; }
+    if (req.url === '/api/login' && req.method === 'POST') {
+      let body = '';
+      req.on('data', (c) => { body += c; });
+      req.on('end', () => {
+        logins.push(body);
+        const [user, pwd] = body.split(':');
+        const ok = pwd === 'secret-switch-pwd';
+        res.setHeader('Content-Type', 'application/json');
+        res.end(JSON.stringify({ ok, user }));
+      });
+      return;
+    }
+    res.statusCode = 404; res.end();
+  });
+  await new Promise((r) => authServer.listen(0, '127.0.0.1', r));
+  t.after(() => new Promise((r) => authServer.close(r)));
+  const authBase = 'http://127.0.0.1:' + authServer.address().port;
+
+  const doc = {
+    title: '切角测试',
+    url: authBase + '/app-page',
+    adapters: [],
+    readOnlyRequests: [{ method: 'POST', url: authBase + '/api/login' }],
+    login: {
+      enabled: false,
+      url: authBase + '/login-page',
+      password: '${TRAINING_SWITCH_PWD}',
+      successSelector: '#app-shell',
+      excludeStorageKeys: ['legacy_uid'],
+    },
+    scenes: [
+      {
+        id: 's1',
+        name: '经理视角',
+        switchUser: 'pm_user',
+        narration: '进入经理视角。',
+        actions: [{ goto: authBase + '/app-page' }],
+        expect: { text: 'pm_user|clean' },
+      },
+      {
+        id: 's2',
+        name: '审计视角',
+        switchUser: 'auditor_user',
+        narration: '切换到审计视角。',
+        actions: [{ goto: authBase + '/app-page' }],
+        expect: { text: 'auditor_user|clean' },
+      },
+    ],
+  };
+  fs.writeFileSync(f.file, YAML.stringify(doc));
+  const result = await f.start('play.js', ['demo.yaml', '--dry']).done;
+  assert.equal(result.code, 0, result.log);
+  assert.deepEqual(logins, ['pm_user:secret-switch-pwd', 'auditor_user:secret-switch-pwd']);
+});

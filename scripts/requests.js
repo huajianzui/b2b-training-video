@@ -9,7 +9,7 @@ function normalizeRequests(raw, base, where, { readOnly = false } = {}) {
   return raw.map((r) => {
     if (!r || typeof r.method !== 'string' || typeof r.url !== 'string') throw new Error(where + ' 每项必须明确 method 和 url');
     const method = r.method.toUpperCase();
-    const methods = readOnly ? ['GET', 'HEAD', 'POST', 'OPTIONS', 'WS'] : ['GET', 'POST', 'PUT', 'PATCH', 'DELETE'];
+    const methods = readOnly ? ['GET', 'HEAD', 'POST', 'PUT', 'OPTIONS', 'WS'] : ['GET', 'POST', 'PUT', 'PATCH', 'DELETE'];
     if (!methods.includes(method)) throw new Error(where + ' 不允许方法 ' + method);
     if (r.url.includes('*')) throw new Error(where + ' URL 不允许通配符');
     let url;
@@ -110,10 +110,6 @@ async function installRequestGuard(context, { readOnlyRequests = [], writeReques
     const request = route.request(), method = request.method(), url = request.url();
     if (new URL(url).protocol === 'file:' && method === 'GET') { await route.continue(); return; }
     const approved = grant.slice(); // 已发起的请求不能借用下一场景的许可。
-    if (method === 'PUT' && /^\/api\/v1\/realtime\/connections\/[^/]+\/subscriptions$/.test(new URL(url).pathname)) {
-      await route.continue();
-      return;
-    }
     if (!allowed(method, url, approved)) {
       blocked(method, url);
       await route.abort('blockedbyclient');

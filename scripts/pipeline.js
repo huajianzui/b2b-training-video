@@ -48,7 +48,7 @@ function fingerprints(script, bgm, { post = false } = {}) {
   const browserCode = codeHash(['script.js', 'features.js', 'play.js', 'requests.js', 'confirmation.js', 'login.js', 'media.js', 'deps.js', 'cli.js', 'uploads.js',
     ...fs.readdirSync(path.join(__dirname, 'adapters')).filter((file) => file.endsWith('.js')).sort().map((file) => 'adapters/' + file)]);
   const manualCode = codeHash(['manual.js', 'cli.js']);
-  const actions = rehearsal.scenes.map((s) => ({ id: s.id, continue: s.continue, feature: s.feature,
+  const actions = rehearsal.scenes.map((s) => ({ id: s.id, switchUser: s.switchUser, continue: s.continue, feature: s.feature,
     actions: s.actions.map(({ cue, at, ...a }) => a), expect: s.expect, expectAt: s.expectAt, endExpect: s.endExpect }));
   const check = digest({ identity, features, implementation: browserCode, adapters: rehearsal.adapters, actions, requests: rehearsal.readOnlyRequests, safety: rehearsal.safety });
   const documentation = { title: script.title, manual: script.manual, sharedGuide: script.sharedGuide,
@@ -64,7 +64,7 @@ function fingerprints(script, bgm, { post = false } = {}) {
   const capture = digest({ source: fs.realpathSync(script.source), url: script.url,
     login: normLogin(script, { resolveCredentials: false }), features, implementation: browserCode,
     adapters: script.adapters, requests: script.readOnlyRequests, safety: script.safety,
-    scenes: script.scenes.map(({ narration, speech, doc, name, actions, ...scene }) => ({ ...scene,
+    scenes: script.scenes.map(({ narration, speech, bodyNarrationText, endNarrationText, doc, name, actions, ...scene }) => ({ ...scene,
       actions: actions.map(({ cue, at, label, ...action }) => action) })) });
   const manual = digest({ record, implementation: manualCode, ...documentation });
   if (bgm && !fs.statSync(bgm).isFile()) throw new Error('背景音乐必须是可读取的音频文件：' + bgm);

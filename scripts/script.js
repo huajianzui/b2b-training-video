@@ -375,9 +375,6 @@ function narrationWarnings(scenes) {
     if (longClauses.length) {
       warnings.push(s.id + '：分句过长（>24字），易导致字幕硬切或 TTS 断句异常：「' + longClauses[0].slice(0, 16) + '…」');
     }
-    if (/解锁后续/.test(text)) {
-      warnings.push(s.id + '：含易粘连词组「解锁后续」，建议改为「即可创建…」或加逗号断开');
-    }
   }
   return warnings;
 }

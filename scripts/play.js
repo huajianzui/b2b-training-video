@@ -30,7 +30,7 @@ const CLI = require('./cli').readCli({
 const fs = require('fs');
 const path = require('path');
 const { requireFrom } = require('./deps');
-const { ensureLoggedIn } = require('./login');
+const { ensureLoggedIn, normLogin, autoFill, judge } = require('./login');
 const { loadScript, asLoginProject, DEFAULT_OUT: SCRIPT_JSON } = require('./script');
 const { installRequestGuard, executionHash } = require('./requests');
 const { waitForData } = require('./confirmation');
@@ -123,6 +123,9 @@ const CURSOR_OVERLAY = `
       'background:rgba(24,95,165,.9);border:2px solid #fff;pointer-events:none;',
       'transform:translate(-50%,-50%);left:-100px;top:-100px;box-shadow:0 2px 8px rgba(0,0,0,.35);',
       'transition:left .16s ease-out,top .16s ease-out;}',
+      '#__tick{position:fixed;right:0;bottom:0;width:1px;height:1px;pointer-events:none;z-index:2147483647;',
+      'background:rgba(0,0,0,.01);animation:__tick .08s steps(2,end) infinite;}',
+      '@keyframes __tick{to{opacity:.5}}',
       '.__rip{position:fixed;z-index:2147483645;width:18px;height:18px;border-radius:50%;',
       'border:4px solid rgba(216,90,48,.95);pointer-events:none;transform:translate(-50%,-50%);',
       'animation:__rip .65s ease-out forwards;}',
@@ -132,6 +135,9 @@ const CURSOR_OVERLAY = `
     const dot = document.createElement('div');
     dot.id = '__cur';
     document.body.appendChild(dot);
+    const tick = document.createElement('div');
+    tick.id = '__tick';
+    document.body.appendChild(tick);
     document.addEventListener('mousemove', e => { dot.style.left = e.clientX + 'px'; dot.style.top = e.clientY + 'px'; }, true);
     document.addEventListener('mousedown', e => {
       if (window.__shotMode) return;
@@ -368,8 +374,9 @@ async function runAction(ctx, adapters, a, notes, step) {
       return a.label || '选择 ' + files.length + ' 个文件';
     }
     case 'goto':
-      // 场景开头的 goto 是为了能单独执行；已经在这一页时再刷新会让视频闪一下
-      if (page.url() === a.url) return a.url + '（已在此页）';
+      // 场景开头的 goto 是为了能单独执行；已经在这一页且本场景未切换角色时，再刷新会让视频闪一下
+      if (page.url() === a.url && !ctx.switchedUser) return a.url + '（已在此页）';
+      ctx.switchedUser = false;
       await page.goto(a.url, { waitUntil: 'domcontentloaded' });
       return a.url;
     case 'click':
@@ -523,27 +530,56 @@ async function main() {
     browser = await chromium.launch({ headless: !HEADED, args: ['--disable-blink-features=AutomationControlled'] });
     const roleAuthCache = {};
     const switchUsers = [...new Set(script.scenes.map((s) => s.switchUser).filter(Boolean))];
-    if (switchUsers.length && script.login && script.login.url) {
-      const tmpCtx = await browser.newContext({ viewport: CFG.viewport, locale: 'zh-CN', serviceWorkers: 'block' });
-      const tmpPage = await tmpCtx.newPage();
-      const pw = (script.login.password && String(script.login.password)) || 'dev-password';
+    const baseLoginCfg = normLogin(asLoginProject(script));
+    if (switchUsers.length && baseLoginCfg.url) {
       for (const uname of switchUsers) {
-        await tmpPage.goto(script.login.url, { waitUntil: 'domcontentloaded' });
-        await tmpPage.fill(script.login.usernameSelector || 'input[autocomplete="username"]', uname);
-        await tmpPage.fill(script.login.passwordSelector || 'input[type="password"]', pw);
-        await tmpPage.click(script.login.submitSelector || 'button.admin-submit');
-        await tmpPage.waitForSelector('.ovm-sidebar, body', { timeout: 15000 });
-        await wait(400);
-        roleAuthCache[uname] = await tmpPage.evaluate(() => {
-          const entries = {};
-          for (let i = 0; i < localStorage.length; i++) {
-            const k = localStorage.key(i);
-            if (k) entries[k] = localStorage.getItem(k);
-          }
-          return entries;
+        const tmpCtx = await browser.newContext({ viewport: CFG.viewport, locale: 'zh-CN', serviceWorkers: 'block' });
+        const tmpGuard = await installRequestGuard(tmpCtx, {
+          readOnlyRequests: baseLoginCfg.readOnlyRequests,
+          writeRequests: baseLoginCfg.writeRequests,
+          pageUrl: baseLoginCfg.url,
         });
+        try {
+          const tmpPage = await tmpCtx.newPage();
+          await tmpPage.goto(baseLoginCfg.url, { waitUntil: 'domcontentloaded', timeout: 45000 });
+          await tmpPage.waitForLoadState('networkidle', { timeout: 5000 }).catch(() => {});
+          await wait(300);
+          tmpGuard.assert();
+          for (const sel of baseLoginCfg.preClick) {
+            const loc = tmpPage.locator(sel).first();
+            if (await loc.isVisible().catch(() => false)) {
+              await loc.click({ timeout: 6000 }).catch(() => {});
+              await wait(400);
+            }
+          }
+          const roleCfg = { ...baseLoginCfg, username: uname, password: baseLoginCfg.password || 'dev-password' };
+          await autoFill(tmpPage, roleCfg, () => {});
+          const deadline = Date.now() + 15000;
+          let loggedIn = false;
+          while (Date.now() < deadline) {
+            await wait(300);
+            tmpGuard.assert();
+            if ((await judge(tmpPage, roleCfg)) === 'in') { loggedIn = true; break; }
+          }
+          if (!loggedIn) throw new Error('无感切角预登录失败（' + uname + '）：未检测到已登录状态，请核对账号、密码与 login.successSelector');
+          await wait(300);
+          tmpGuard.assert();
+          const state = await tmpCtx.storageState();
+          const localStorage = await tmpPage.evaluate(() => {
+            const entries = {};
+            for (let i = 0; i < localStorage.length; i++) {
+              const k = localStorage.key(i);
+              if (k) entries[k] = localStorage.getItem(k);
+            }
+            return entries;
+          });
+          roleAuthCache[uname] = { cookies: state.cookies || [], localStorage };
+        } finally {
+          tmpGuard.close();
+          await tmpCtx.close();
+          tmpGuard.assert();
+        }
       }
-      await tmpCtx.close();
       console.log('[无感切角] 已预取 ' + switchUsers.length + ' 个角色凭证：' + switchUsers.join(', '));
     }
     fs.rmSync(videoDir, { recursive: true, force: true });
@@ -567,12 +603,17 @@ async function main() {
   for (const scene of script.scenes) {
     guard.grant([]);
     if (scene.switchUser && roleAuthCache[scene.switchUser]) {
-      await page.evaluate((entries) => {
-        localStorage.removeItem('ovm_user_id');
+      const roleAuth = roleAuthCache[scene.switchUser];
+      await context.clearCookies();
+      if (roleAuth.cookies.length) await context.addCookies(roleAuth.cookies);
+      const excludeKeys = baseLoginCfg.excludeStorageKeys;
+      await page.evaluate(({ entries, exclude }) => {
+        localStorage.clear();
         for (const [k, v] of Object.entries(entries)) {
-          if (k !== 'ovm_user_id' && v !== null) localStorage.setItem(k, v);
+          if (!exclude.includes(k) && v !== null) localStorage.setItem(k, v);
         }
-      }, roleAuthCache[scene.switchUser]);
+      }, { entries: roleAuth.localStorage, exclude: excludeKeys });
+      ctx.switchedUser = true;
     }
     const start = now();
     const narr = durs[scene.id] || 0;

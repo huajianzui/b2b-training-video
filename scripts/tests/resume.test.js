@@ -6,6 +6,7 @@ const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
 const { spawnSync, spawn } = require('node:child_process');
+const YAML = require('yaml');
 const { loadScript } = require('../script');
 const { acquireLock } = require('../pipeline');
 
@@ -187,6 +188,59 @@ test('续跑被拒时列出真正变化的输入与同批失效的环节，避�
   assert.match(speech, /从 tts 环节/);
   assert.match(speech, /本次变化的输入：旁白文本/);
   assert.doesNotThrow(() => openPipeline(f.out, loadScript(f.file), 'tts', { manual: false }), '只改旁白时 check 仍有效，可以从 tts 起跑');
+});
+
+test('带 ending 的写功能场景修改正文或收尾旁白后，capture 指纹不变，允许 --post 纯后期复用画面', (t) => {
+  const f = fixture(t);
+  const { fingerprints, verifyCapture } = require(path.join(f.root, 'pipeline'));
+  fs.writeFileSync(path.join(f.root, 'demo.features.yaml'), YAML.stringify({
+    module: '示例', confirmedAt: '2026-10-15 10:00:00',
+    environment: { name: '本地隔离库', tier: 'isolated', testData: true },
+    pages: [{ id: 'p1', name: '列表', route: '/list' }],
+    features: [{
+      id: 'p1.save', page: 'p1', name: '保存', kind: 'write', include: true,
+      rehearsalMode: 'submit', writeMode: 'submit',
+      writeRequests: [{ method: 'POST', url: 'https://example.invalid/api/save' }],
+    }],
+  }));
+  const makeEndingYaml = (bodyNarr, endNarr, switchUser = 'user_a') => [
+    'title: 示例',
+    'url: https://example.invalid',
+    'login: {enabled: false}',
+    'features: demo.features.yaml',
+    'scenes:',
+    '  - id: edit',
+    '    name: 编辑',
+    '    feature: p1.save',
+    '    switchUser: ' + switchUser,
+    '    narration: ' + bodyNarr,
+    '    actions:',
+    '      - click: { text: 编辑 }',
+    '        at: 点击编辑',
+    '    ending:',
+    '      submit:',
+    '        narration: ' + endNarr,
+    '        actions:',
+    '          - click: { text: 保存 }',
+    '            at: 点击保存',
+  ].join('\n') + '\n';
+
+  fs.writeFileSync(f.file, makeEndingYaml('首先点击编辑打开窗口。', '核对后点击保存完成提交。'));
+  fs.writeFileSync(path.join(f.out, 'run-report.json'), '{"ok":true}');
+  const p = seed(f);
+  p.complete('record', ['raw.webm', 'session.json', 'run-report.json']);
+  // 修改正文与收尾旁白，但不改动作或角色
+  fs.writeFileSync(f.file, makeEndingYaml('在列表里点击编辑进入修改。', '确认无误后点击保存立即生效。'));
+  const updatedScript = loadScript(f.file);
+  assert.doesNotThrow(() => verifyCapture(f.out, updatedScript), '带 ending 场景只改旁白时 verifyCapture 应通过');
+
+  // 修改 switchUser 角色时，check 与 capture 均应变化
+  const beforeHashes = fingerprints(updatedScript, null);
+  fs.writeFileSync(f.file, makeEndingYaml('在列表里点击编辑进入修改。', '确认无误后点击保存立即生效。', 'user_b'));
+  const switchedScript = loadScript(f.file);
+  const afterHashes = fingerprints(switchedScript, null);
+  assert.notEqual(beforeHashes.check, afterHashes.check, '修改 switchUser 必须使 check 指纹失效');
+  assert.notEqual(beforeHashes.capture, afterHashes.capture, '修改 switchUser 必须使 capture 指纹失效');
 });
 
 test('环境变量切换登录角色后不能使用先前角色的产物', (t) => {

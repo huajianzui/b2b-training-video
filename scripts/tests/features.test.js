@@ -101,3 +101,36 @@ test('准备写入与最终收尾独立，重盘点改变准备接口会撤销�
   const bad = structuredClone(f.source); bad.features[0].preparation.requests = bad.features[0].writeRequests;
   fs.writeFileSync(f.fresh, YAML.stringify(bad)); assert.throws(() => loadFeatures(f.fresh), /路径相交/);
 });
+
+test('三级环境 tier 校验与 dependsOn 前后强状态依赖校验', (t) => {
+  const f = fixture(t);
+  f.source.environment.tier = 'isolated';
+  f.source.features[0].include = true;
+  f.source.features[0].rehearsalMode = 'cancel';
+  f.source.features[0].writeMode = 'submit';
+  f.source.features.push({
+    id: 'approve', name: '审批订单', page: 'orders', kind: 'write', include: true,
+    dependsOn: ['create'], rehearsalMode: 'submit', writeMode: 'submit',
+    writeRequests: [{ method: 'POST', url: '/api/orders/approve' }],
+  });
+  f.save(f.source);
+
+  // 前置功能 create 在演练选了 cancel，后续依赖它的 approve 在演练选了 submit -> 确认时报错阻断
+  assert.throws(() => saveDecisions(f.saved, {}, true), /依赖前置功能.*演练阶段选了「填完取消」/);
+
+  // 将前置功能 create 演练也设为 submit -> 确认通过
+  const confirmed = saveDecisions(f.saved, { create: { rehearsalMode: 'submit' } }, true);
+  assert.equal(confirmed.environment.tier, 'isolated');
+  assert.deepEqual(confirmed.features[1].dependsOn, ['create']);
+
+  // 非法 tier 或不存在的 dependsOn 拒绝加载
+  const badTier = structuredClone(f.source);
+  badTier.environment.tier = 'invalid-tier';
+  fs.writeFileSync(f.fresh, YAML.stringify(badTier));
+  assert.throws(() => loadFeatures(f.fresh), /environment\.tier/);
+
+  const badDep = structuredClone(f.source);
+  badDep.features[1].dependsOn = ['missing.feature'];
+  fs.writeFileSync(f.fresh, YAML.stringify(badDep));
+  assert.throws(() => loadFeatures(f.fresh), /dependsOn.*不在 features 清单里/);
+});
