@@ -32,3 +32,9 @@ class SubtitleTests(unittest.TestCase):
         for offset in [-1, float("nan"), float("inf")]:
             with self.subTest(offset=offset), self.assertRaises(ValueError):
                 shift_srt("", offset)
+
+    def test_build_srt_accounts_for_clause_pause_weight(self):
+        # 短句（1字"好"）+ 长句（18字）：计入句末停顿权重（+1.5）后，短句占比 2.5/22 = 1.136s（大于纯字数比 1/19 = 0.526s）
+        srt = build_srt([(0.0, 10.0, "好。这是一段需要十八个字才能写完的长句子。")])
+        self.assertIn("00:00:00,000 --> 00:00:01,136", srt)
+        self.assertIn("00:00:01,136 --> 00:00:10,000", srt)

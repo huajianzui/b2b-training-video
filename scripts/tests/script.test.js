@@ -129,3 +129,30 @@ test('内置多音字规则默认生效且保护调度，同时检测正文与�
   assert.ok(scene.speech.includes('察虫并条整'), '查重/调整应默认映射：' + scene.speech);
   assert.ok(compiled.narrationWarnings.some((w) => w.includes('重复出现「点击保存」')), '应提示正文与收尾重复点击话术');
 });
+
+test('同一段旁白中后续动作的 at 从前序动作命中位置往后查找，不误判前文重复词倒挂；支持动作级 doc: false 与 altSpeech 预热字段', (t) => {
+  const f = endingFixtureRaw(t,
+    {
+      cancel: { narration: '暂不提交时点击取消返回列表。', actions: [{ click: { text: '取消' }, at: '点击取消' }] },
+      submit: { narration: '确认无误后点击保存返回列表。', actions: [{ click: { text: '保存' }, at: '点击保存', doc: false }] },
+    },
+    {
+      narration: '列表上方可以按条件筛选，输入名称后点击查询，列表会立即刷新。',
+      actions: [
+        { click: { text: '关闭抽屉' }, doc: false },
+        { fill: { target: { id: 'kw' }, text: '测试' }, at: '输入名称' },
+        { click: { text: '查询' }, at: '点击查询' },
+        { waitFor: { text: '结果' }, at: '列表会立即刷新' },
+      ],
+    });
+  const rehearsal = loadScript(f, { stage: 'rehearsal' });
+  const s = rehearsal.scenes[0];
+  assert.equal(s.actions[0].doc, false);
+  assert.equal(s.actions[4].doc, undefined);
+  assert.ok(s.actions[3].cue > s.actions[2].cue, '后文「列表会立即刷新」应命中第二个「列表」，cue 大于前序动作');
+  assert.ok(s.altSpeech && s.altSpeech.includes('确认无误后点击保存'), '演练阶段应编译出 submit 分支的 altSpeech 供 tts.py 预热');
+
+  const record = loadScript(f, { stage: 'record' });
+  assert.equal(record.scenes[0].actions[4].doc, false, 'ending.submit 里的 doc: false 应保留');
+  assert.ok(record.scenes[0].altSpeech && record.scenes[0].altSpeech.includes('暂不提交时点击取消'), '正式阶段应编译出 cancel 分支的 altSpeech');
+});

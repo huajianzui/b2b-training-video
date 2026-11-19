@@ -94,19 +94,25 @@ async def main():
             sys.exit(f"读不到时长：{clip}")
         return s["id"], clip, dur, spoken, cached
 
-    # 顺带预热片头片尾默认参数配音到 tts-cache，后期合成卡片时直接命中缓存
-    card_tasks = []
+    # 顺带预热片头片尾默认参数配音，以及另一收尾分支（cancel/submit）配音到 tts-cache，
+    # 确保在 --rehearsal 下预热 tts.py 后，正式录制切换收尾分支也能直接命中缓存
+    extra_tasks = []
     for pos in ("intro", "outro"):
         card = script.get(pos)
         if isinstance(card, dict):
             spoken = card.get("speech") or card.get("narration")
             if spoken and not card.get("duration"):
                 key = hashlib.sha1(f"{voice}|{rate}|{spoken}".encode("utf-8")).hexdigest()[:16]
-                card_tasks.append(ensure_clip(spoken, CACHE / f"{key}.mp3"))
+                extra_tasks.append(ensure_clip(spoken, CACHE / f"{key}.mp3"))
+    for s in todo:
+        alt_spoken = s.get("altSpeech")
+        if alt_spoken and alt_spoken != (s.get("speech") or s["narration"]):
+            key = hashlib.sha1(f"{voice}|{rate}|{alt_spoken}".encode("utf-8")).hexdigest()[:16]
+            extra_tasks.append(ensure_clip(alt_spoken, CACHE / f"{key}.mp3"))
 
     results = await asyncio.gather(*(process_scene(s) for s in todo))
-    if card_tasks:
-        await asyncio.gather(*card_tasks, return_exceptions=True)
+    if extra_tasks:
+        await asyncio.gather(*extra_tasks, return_exceptions=True)
 
     hits = 0
     for sid, clip, dur, spoken, cached in results:

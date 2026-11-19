@@ -169,7 +169,7 @@ node produce.js <脚本> --dry
 ## 6. 验收与交付
 
 - MP4 要有音视频轨且完整解码：`node tools/mp4info.js <成品> --require-audio --decode`。片头片尾或媒体失败不交付；录像须覆盖场景、旁白与留白。
-- 正式手册来自 `output/manual/record/`，演练素材在 `manual/rehearsal/`；核对正文、步骤、截图和业务口径。布局验收与文件完整性检查分别说明。
+- 正式手册来自 `output/manual/record/`，演练素材在 `manual/rehearsal/`；核对正文、步骤、截图和业务口径。对关遗留抽屉、按 `Tab` 失焦、或无需重复截图的二次确认弹窗点击，在动作上写 `doc: false` 精简手册篇幅（支持通过 `produce.js --post` 或 `manual.js --post` 免重录更新手册步骤显隐）。布局验收与文件完整性检查分别说明。
 - 对照配音前的教学核对检查实际成片与手册：入口、范围、复杂交互和异常处理确实讲到；缺口如实列入报告，工程测试通过不能代替内容验收。
 - 交付同名 SRT；`output/subs.srt` 是保留的正片输入，不是带片头成品字幕。
 - `pronounce` 只改配音，字幕保留原文；禁止对「行、重、调」等高频多音字做单字全局替换，应按具体词组替换并核对 `script.json` 的 `speech` 字段；`pronounceChecked` 只记录确实抽听的词。集中抽听，更正优先纯后期。

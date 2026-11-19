@@ -344,7 +344,7 @@ async function runAction(ctx, adapters, a, notes, step) {
     const hit = await ctx.findVisible(a.target);
     hitName = describe(a.target[hit.index]);
     if (hit.index > 0) notes.push('主定位失效，降级命中第 ' + (hit.index + 1) + ' 个候选：' + hitName);
-    if (SHOTS) Object.assign(step, await capture(page, hit.locator, path.join(SHOT_DIR, step.id + '.png')));
+    if (SHOTS && a.doc !== false) Object.assign(step, await capture(page, hit.locator, path.join(SHOT_DIR, step.id + '.png')));
     return hit.locator;
   };
 
@@ -366,7 +366,7 @@ async function runAction(ctx, adapters, a, notes, step) {
         }
       }
       await input.setInputFiles(files);
-      if (SHOTS) {
+      if (SHOTS && a.doc !== false) {
         const parent = input.locator('..');
         const box = await parent.boundingBox();
         step.shot = await cleanShot(page, path.join(SHOT_DIR, step.id + '.png'), box);
@@ -393,7 +393,12 @@ async function runAction(ctx, adapters, a, notes, step) {
       await ctx.click(el, a.target);
       await el.fill('');
       if (DRY) await el.fill(a.text);
-      else await el.pressSequentially(a.text, { delay: CFG.typeDelay });
+      else {
+        // 长文本输入自适应提速，单次输入封顶约 1.1s，避免长备注拖慢后续 at 锚点导致音画脱节
+        const len = Math.max(1, [...String(a.text || '')].length);
+        const delay = Math.min(CFG.typeDelay, Math.max(20, Math.floor(1100 / len)));
+        await el.pressSequentially(a.text, { delay });
+      }
       return hitName + ' ← ' + a.text;
     }
     case 'select': {
@@ -663,6 +668,7 @@ async function main() {
         if (i === scene.expectAt) await checkpoint(scene.expect);
         guard.grant(a.prepare ? scene.preparationRequests : i >= scene.expectAt && scene.writeMode === 'submit' ? scene.writeRequests : []);
         const step = { id: scene.id + '-' + String(i + 1).padStart(2, '0'), op: a.op, label: a.label || '',
+          ...(a.doc === false ? { doc: false } : {}),
           text: a.text, value: a.value, key: a.key, url: a.url, y: a.y };
         doc.steps.push(step);
         if (!DRY && a.cue !== undefined) {

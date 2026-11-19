@@ -639,6 +639,19 @@ test('真实 produce 两轮确认、手册与纯后期更正不重放业务，�
   const zip = await require('jszip').loadAsync(fs.readFileSync(path.join(f.out, '写入回归手册.docx')));
   const document = await zip.file('word/document.xml').async('string');
   assert.match(document, /新按钮名称/); assert.doesNotMatch(document, /旧按钮名称/);
+
+  // 在纯后期将第一个动作标记为 doc: false，验证手册不重录即可剔除该步骤
+  doc.scenes[0].actions[0].doc = false;
+  fs.writeFileSync(f.file, YAML.stringify(doc));
+  const postHide = await f.start('manual.js', ['demo.yaml', '--post']).done;
+  assert.equal(postHide.code, 0, postHide.log);
+  const zip2 = await require('jszip').loadAsync(fs.readFileSync(path.join(f.out, '写入回归手册.docx')));
+  const doc2 = await zip2.file('word/document.xml').async('string');
+  assert.doesNotMatch(doc2, /新按钮名称/, 'doc: false 的步骤在手册中应被省略');
+  delete doc.scenes[0].actions[0].doc;
+  fs.writeFileSync(f.file, YAML.stringify(doc));
+  const postRestore = await f.start('manual.js', ['demo.yaml', '--post']).done;
+  assert.equal(postRestore.code, 0, postRestore.log);
   // 实际 Word 曾把步骤留在前页、截图放到后页；验证每组文字—图—图注的分页约束。
   const paragraphs = document.match(/<w:p\b[^>]*>[\s\S]*?<\/w:p>/g);
   const headings = paragraphs.filter(p => /<w:pStyle w:val="Heading[12]"/.test(p));

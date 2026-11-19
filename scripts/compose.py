@@ -76,15 +76,16 @@ def ts(sec):
 
 
 def build_srt(cues):
-    """cues: [(起, 止, 文本)]，同一句旁白按字数比例分配时长"""
+    """cues: [(起, 止, 文本)]，同一句旁白按字数加句末停顿权重（+1.5 字）分配时长，与 script.js 的 speakWeight 对齐"""
     lines = []
     n = 0
     for start, dur, text in cues:
         pieces = split_sentences(text)
-        total = sum(len(p) for p in pieces) or 1
+        weights = [(len(p) + 1.5 if len(pieces) > 1 else len(p)) for p in pieces]
+        total = sum(weights) or 1
         t = start
-        for p in pieces:
-            d = dur * len(p) / total
+        for p, w in zip(pieces, weights):
+            d = dur * w / total
             n += 1
             lines += [str(n), f"{ts(t)} --> {ts(t + d)}", p, ""]
             t += d

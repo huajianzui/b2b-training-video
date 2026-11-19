@@ -47,8 +47,9 @@ const IMG = { width: 600, height: 338 };                       // 内容区宽�
 const bracket = (s) => '【' + s + '】';
 const quote = (s) => '「' + s + '」';
 
-/** 把一个动作写成手册里的一句话；返回 null 表示这一步不进手册（纯等待、跳转地址这类读者不需要的） */
+/** 把一个动作写成手册里的一句话；返回 null 表示这一步不进手册（纯等待、跳转地址或显式标了 doc: false 的清理/辅助步骤） */
 function stepText(st) {
+  if (st.doc === false) return null;
   const name = st.label || st.name || '';
   const N = name ? bracket(name) : '';
   switch (st.op) {
@@ -183,8 +184,9 @@ function build(script, material) {
         style: { paragraph: { indent: { left: 720, hanging: 360 } } } }],
     });
     for (const [index, originalStep] of mat.steps.entries()) {
-      // 操作顺序由来源校验固定；采用当前文案副本，不覆盖原始录制素材。
-      const st = { ...originalStep, label: scene.actions[index]?.label || '' };
+      // 操作顺序由来源校验固定；采用当前文案与 doc 显隐副本，不覆盖原始录制素材。
+      const act = scene.actions[index];
+      const st = { ...originalStep, label: act?.label || '', doc: act?.doc === false ? false : originalStep.doc };
       const text = stepText(st);
       if (!text) continue;
       body.push(new Paragraph({ numbering: { reference: ref, level: 0 }, keepLines: true, keepNext: !!st.shot,

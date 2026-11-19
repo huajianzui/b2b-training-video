@@ -49,13 +49,14 @@ function fingerprints(script, bgm, { post = false } = {}) {
     ...fs.readdirSync(path.join(__dirname, 'adapters')).filter((file) => file.endsWith('.js')).sort().map((file) => 'adapters/' + file)]);
   const manualCode = codeHash(['manual.js', 'cli.js']);
   const actions = rehearsal.scenes.map((s) => ({ id: s.id, switchUser: s.switchUser, continue: s.continue, feature: s.feature,
-    actions: s.actions.map(({ cue, at, ...a }) => a), expect: s.expect, expectAt: s.expectAt, endExpect: s.endExpect }));
+    actions: s.actions.map(({ cue, at, label, doc: actionDoc, ...a }) => a), expect: s.expect, expectAt: s.expectAt, endExpect: s.endExpect }));
   const check = digest({ identity, features, implementation: browserCode, adapters: rehearsal.adapters, actions, requests: rehearsal.readOnlyRequests, safety: rehearsal.safety });
   const documentation = { title: script.title, manual: script.manual, sharedGuide: script.sharedGuide,
     coverSubtitle: script.intro && script.intro.subtitle, watermark: script.watermark,
     overview: script.manual.overview || (script.intro && script.intro.narration),
     shared: script.features && script.features.shared,
-    scenes: script.scenes.map((s) => ({ id: s.id, name: s.name, narration: s.narration, doc: s.doc })) };
+    scenes: script.scenes.map((s) => ({ id: s.id, name: s.name, narration: s.narration, doc: s.doc,
+      actionDocs: s.actions.map((a) => ({ label: a.label || '', doc: a.doc !== false })) })) };
   const ttsCode = codeHash(['tts.py', 'speech.py']);
   const speeches = script.scenes.map((s) => ({ id: s.id, speech: s.speech }));
   const tts = digest({ implementation: ttsCode, voice: script.voice, rate: script.rate, scenes: speeches });
@@ -64,8 +65,8 @@ function fingerprints(script, bgm, { post = false } = {}) {
   const capture = digest({ source: fs.realpathSync(script.source), url: script.url,
     login: normLogin(script, { resolveCredentials: false }), features, implementation: browserCode,
     adapters: script.adapters, requests: script.readOnlyRequests, safety: script.safety,
-    scenes: script.scenes.map(({ narration, speech, bodyNarrationText, endNarrationText, doc, name, actions, ...scene }) => ({ ...scene,
-      actions: actions.map(({ cue, at, label, ...action }) => action) })) });
+    scenes: script.scenes.map(({ narration, speech, altSpeech, bodyNarrationText, endNarrationText, doc, name, actions, ...scene }) => ({ ...scene,
+      actions: actions.map(({ cue, at, label, doc: actionDoc, ...action }) => action) })) });
   const manual = digest({ record, implementation: manualCode, ...documentation });
   if (bgm && !fs.statSync(bgm).isFile()) throw new Error('背景音乐必须是可读取的音频文件：' + bgm);
   const music = bgm ? { source: fs.realpathSync(bgm), hash: fileHash(bgm) } : null;

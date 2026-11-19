@@ -122,6 +122,10 @@ function normAction(raw, where, baseUrl, baseDir, recordedUploads) {
   if (raw.at !== undefined) a.at = String(raw.at);
   if (raw.prepare !== undefined && typeof raw.prepare !== 'boolean') throw new ScriptError(where + ' prepare 必须是布尔值');
   if (raw.prepare) a.prepare = true;
+  if (raw.doc !== undefined) {
+    if (typeof raw.doc !== 'boolean') throw new ScriptError(where + ' doc 必须是布尔值（doc: false 表示该步骤不写入操作手册、不截手册图）');
+    if (!raw.doc) a.doc = false;
+  }
   // 收尾动作没写 at 时由 withEnding 算出的默认锚点；写了 at 时 resolveCue 会覆盖它。
   if (raw.defaultCue !== undefined) a.cue = Number(raw.defaultCue);
   return a;
@@ -130,26 +134,27 @@ function normAction(raw, where, baseUrl, baseDir, recordedUploads) {
 // 标点处 TTS 会停顿，按两个字计
 const speakWeight = (s) => [...s].reduce((n, ch) => n + (/[，。；：、！？,.;:!?]/.test(ch) ? 2 : /\s/.test(ch) ? 0 : 1), 0);
 
-/** at：旁白里的一个短语，动作等旁白念到这里再做；换算成旁白进度比例 cue（0~1） */
+/** at：旁白里的一个短语，动作等旁白念到这里再做；换算成旁白进度比例 cue（0~1），返回命中的字符下标 */
 function resolveCue(a, narration, timing, where, minPos = 0, autoStart = false) {
   if (a.at === undefined) {
     if (a.cue === undefined && autoStart && minPos > 0 && timing === 'with' && narration) {
       a.cue = speakWeight(narration.slice(0, minPos)) / (speakWeight(narration) || 1);
     }
-    return;
+    return minPos;
   }
   if (timing === 'before') throw new ScriptError(where + '：timing 为 before 时旁白先念完，不能用 at');
   let pos = narration.indexOf(a.at, minPos);
   if (pos < 0 && minPos > 0) pos = narration.indexOf(a.at);
   if (pos < 0) throw new ScriptError(where + '：at「' + a.at + '」在旁白里找不到');
   a.cue = speakWeight(narration.slice(0, pos)) / (speakWeight(narration) || 1);
+  return pos;
 }
 
 function normActionBody(raw, where, baseUrl, baseDir, recordedUploads) {
   if (!raw || typeof raw !== 'object' || Array.isArray(raw)) {
     throw new ScriptError(where + '：动作要写成「动作名: 参数」，实际是 ' + JSON.stringify(raw));
   }
-  const keys = Object.keys(raw).filter((k) => !['label', 'at', 'prepare', 'defaultCue'].includes(k));
+  const keys = Object.keys(raw).filter((k) => !['label', 'at', 'prepare', 'doc', 'defaultCue'].includes(k));
   if (keys.length !== 1) throw new ScriptError(where + '：一个动作只能有一个动作名，实际是 ' + keys.join(', '));
   const op = keys[0];
   const arg = raw[op];
@@ -305,7 +310,16 @@ function applyFeature(s, featById, where, stage, continued) {
   const mode = stage === 'rehearsal' && f.kind === 'write' ? f.rehearsalMode : f.writeMode;
   const end = s.ending[mode];
   if (!end) throw new ScriptError(where + '：功能「' + f.name + '」本阶段选的是「' + MODE_NAME[mode] + '」，场景缺少 ending.' + mode);
-  return Object.assign(withEnding(s, end), { writeMode: f.kind === 'write' ? mode : 'cancel', writeRequests: f.writeRequests });
+  const altMode = mode === 'submit' ? 'cancel' : 'submit';
+  const altEnd = s.ending[altMode];
+  const altNarration = altEnd && altEnd.narration
+    ? [s.narration ? String(s.narration).trim() : '', String(altEnd.narration).trim()].filter(Boolean).join('')
+    : '';
+  return Object.assign(withEnding(s, end), {
+    writeMode: f.kind === 'write' ? mode : 'cancel',
+    writeRequests: f.writeRequests,
+    ...(altNarration ? { altNarration } : {}),
+  });
 }
 
 /**
@@ -462,18 +476,21 @@ function normalize(doc, file, { stage = 'record', recordedUploads = [] } = {}) {
     if (timing !== 'with' && timing !== 'before') throw new ScriptError(where + '：timing 只能是 with 或 before');
     const narration = s.narration ? String(s.narration).trim() : '';
     let prevAt = -1;
+    let lastPos = 0;
     const actions = (s.actions || []).map((a, j) => {
       const w = where + ' 第 ' + (j + 1) + ' 个动作';
       const act = normAction(a, w, url, baseDir, recordedUploads);
       if (act.prepare && !(s.preparationRequests || []).length) throw new ScriptError(w + '：本阶段尚未批准上传/预检副作用');
       const isEndStart = s.expectAt !== undefined && j === s.expectAt;
       const inEnding = s.expectAt !== undefined && j >= s.expectAt;
-      resolveCue(act, narration, timing, w, inEnding ? (s.bodyNarrationLen || 0) : 0, isEndStart);
+      const floorPos = Math.max(inEnding ? (s.bodyNarrationLen || 0) : 0, lastPos);
+      const matchedPos = resolveCue(act, narration, timing, w, floorPos, isEndStart);
       if (act.at !== undefined && act.cue !== undefined) {
         if (act.cue < prevAt - 1e-6) {
           throw new ScriptError(w + '：at「' + act.at + '」在旁白中的位置早于前一个动作的 at，会导致音画顺序倒挂');
         }
         prevAt = act.cue;
+        lastPos = matchedPos;
       }
       return act;
     });
@@ -483,6 +500,7 @@ function normalize(doc, file, { stage = 'record', recordedUploads = [] } = {}) {
       switchUser: s.switchUser ? String(s.switchUser) : '',
       bodyNarrationText: s.bodyNarrationText || '',
       endNarrationText: s.endNarrationText || '',
+      ...(s.altNarration ? { altSpeech: speech(s.altNarration) } : {}),
       features: asList(s.feature),
       continue: !!raw.continue,
       narration,
