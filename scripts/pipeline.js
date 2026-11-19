@@ -54,6 +54,7 @@ function fingerprints(script, bgm, { post = false } = {}) {
   const documentation = { title: script.title, manual: script.manual, sharedGuide: script.sharedGuide,
     coverSubtitle: script.intro && script.intro.subtitle, watermark: script.watermark,
     overview: script.manual.overview || (script.intro && script.intro.narration),
+    thesis: script.thesis || null,
     shared: script.features && script.features.shared,
     scenes: script.scenes.map((s) => ({ id: s.id, name: s.name, narration: s.narration, doc: s.doc,
       actionDocs: s.actions.map((a) => ({ label: a.label || '', doc: a.doc !== false })) })) };

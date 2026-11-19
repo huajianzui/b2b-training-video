@@ -13,6 +13,12 @@
  *     name: 本地开发环境                  仅供制作确认，不进入业务旁白
  *     tier: isolated                     isolated（隔离库+洁净黄金数据+快照回滚真演练）| shared-test（共享测试库+视图筛选降噪+真实提交）| restricted（受限环境+只演示不触发写接口）
  *     testData: true                     用户是否允许写测试数据；每轮提交还要确认本轮数据准备
+ *   thesis:                              模块业务总纲（先读业务文档与核心代码提炼，抓住主要矛盾，指导造数与排片）
+ *     why: 为什么有这个模块（解决什么业务痛点，在全局业务流中的上下游位置）
+ *     coreContradiction: 本模块要解决的主要矛盾是什么
+ *     mainline: 围绕主要矛盾的核心业务主线闭环
+ *     keyDesigns: [化解主要矛盾的核心设计巧思与防错机制]
+ *     dataDesign: 造数设计方案（如何用正反对比、阈值边界、防错纠错数据把设计巧思演出来，拒绝走过场数据）
  *   pages:
  *     - id: list
  *       name: 订单列表
@@ -24,6 +30,7 @@
  *       page: list
  *       name: 新增订单
  *       kind: write                      read 只读 | write 写数据
+ *       priority: core                   core（核心主线/设计巧思，重点讲透）| supporting（支撑功能，顺带串联）| routine（常规外围操作，合并或一笔带过）
  *       desc: 这个功能是什么
  *       how: 打算怎么演示
  *       permission: order:manage
@@ -73,6 +80,18 @@ const { normalizeRequests, assertDisjoint } = require('./requests');
 const KINDS = ['read', 'write'];
 const WRITE_MODES = ['cancel', 'submit'];
 const ENV_TIERS = ['isolated', 'shared-test', 'restricted'];
+const PRIORITIES = ['core', 'supporting', 'routine'];
+
+function normThesis(raw) {
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return null;
+  const why = str(raw.why);
+  const coreContradiction = str(raw.coreContradiction);
+  const mainline = str(raw.mainline);
+  const keyDesigns = strList(raw.keyDesigns).map((s) => s.trim()).filter(Boolean);
+  const dataDesign = str(raw.dataDesign);
+  if (!why && !coreContradiction && !mainline && !keyDesigns.length && !dataDesign) return null;
+  return { why, coreContradiction, mainline, keyDesigns, dataDesign };
+}
 
 class FeatureError extends Error {}
 
@@ -111,6 +130,10 @@ function normalize(raw, file) {
     if (!pageIds.has(str(f.page))) throw new FeatureError(w + '「' + id + '」：page「' + str(f.page) + '」不在 pages 里');
     const kind = str(f.kind) || 'read';
     if (!KINDS.includes(kind)) throw new FeatureError(w + '「' + id + '」：kind 只能是 ' + KINDS.join(' / '));
+    const priority = str(f.priority);
+    if (priority && !PRIORITIES.includes(priority)) {
+      throw new FeatureError(w + '「' + id + '」：priority 只能是 ' + PRIORITIES.join(' / '));
+    }
     const writeMode = str(f.writeMode) || defaultWriteMode;
     if (!WRITE_MODES.includes(writeMode)) throw new FeatureError(w + '「' + id + '」：writeMode 只能是 ' + WRITE_MODES.join(' / '));
     const rehearsalMode = str(f.rehearsalMode);
@@ -138,6 +161,7 @@ function normalize(raw, file) {
       page: str(f.page),
       name: str(f.name),
       kind,
+      ...(priority ? { priority } : {}),
       desc: str(f.desc),
       how: str(f.how),
       permission: str(f.permission),
@@ -165,6 +189,7 @@ function normalize(raw, file) {
       if (!ids.has(depId)) throw new FeatureError(where + '「' + f.id + '」：dependsOn「' + depId + '」不在 features 清单里');
     }
   }
+  const thesis = normThesis(raw.thesis);
   return {
     file: path.resolve(file),
     module: str(raw.module),
@@ -173,6 +198,7 @@ function normalize(raw, file) {
     generatedAt: str(raw.generatedAt),
     confirmedAt: str(raw.confirmedAt),
     environment,
+    ...(thesis ? { thesis } : {}),
     pages,
     features,
   };
@@ -288,9 +314,12 @@ function mergeFresh(savedFile, freshFile) {
   const removed = saved.features.filter((f) => !freshIds.has(f.id) && f.status !== 'removed');
   for (const f of removed) features.push(Object.assign({}, f, { include: false, status: 'removed' }));
 
-  const contextChanged = (fresh.module || saved.module) !== saved.module || JSON.stringify(fresh.pages) !== JSON.stringify(saved.pages);
+  const contextChanged = (fresh.module || saved.module) !== saved.module
+    || JSON.stringify(fresh.pages) !== JSON.stringify(saved.pages)
+    || JSON.stringify(fresh.thesis || null) !== JSON.stringify(saved.thesis || null);
   const changed = added.length > 0 || removed.length > 0 || updated.length > 0 || contextChanged;
   const savedEnvironment = readDoc(savedFile).toJS().environment;
+  const mergedThesis = fresh.thesis || saved.thesis || null;
   const out = {
     module: fresh.module || saved.module,
     script: saved.script || fresh.script,
@@ -298,6 +327,7 @@ function mergeFresh(savedFile, freshFile) {
     generatedAt: fresh.generatedAt,
     confirmedAt: changed ? null : saved.confirmedAt || null,
     environment: savedEnvironment || readDoc(freshFile).toJS().environment || saved.environment,
+    ...(mergedThesis ? { thesis: mergedThesis } : {}),
     pages: fresh.pages.map((p) => {
       const o = { id: p.id, name: p.name };
       if (p.entry) o.entry = p.entry;
@@ -307,6 +337,7 @@ function mergeFresh(savedFile, freshFile) {
     }),
     features: features.map((f) => {
       const o = { id: f.id, page: f.page, name: f.name, kind: f.kind };
+      if (f.priority) o.priority = f.priority;
       for (const k of ['desc', 'how', 'permission', 'when', 'requires', 'blocked', 'shared', 'source', 'submitRestriction']) if (f[k]) o[k] = f[k];
       if (f.dependsOn && f.dependsOn.length) o.dependsOn = f.dependsOn;
       if (f.minor) o.minor = true;

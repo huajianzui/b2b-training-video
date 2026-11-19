@@ -562,9 +562,11 @@ function normalize(doc, file, { stage = 'record', recordedUploads = [] } = {}) {
       prerequisites: asList(doc.manual && doc.manual.prerequisites),
       notes: asList(doc.manual && doc.manual.notes),
     },
+    ...(feat && feat.thesis ? { thesis: feat.thesis } : {}),
     features: feat && {
       file: feat.file,
       confirmedAt: feat.confirmedAt,
+      ...(feat.thesis ? { thesis: feat.thesis } : {}),
       // 勾选了但脚本里还没有场景的功能：需要补写场景（以后由 AI 补）
       uncovered: feat.features.filter((f) => f.include && !covered.has(f.id)).map((f) => ({ id: f.id, name: f.name })),
       // 没单独演示、交给《系统通用操作》的功能，手册里写引用；仍勾选的出片时提示可能重复

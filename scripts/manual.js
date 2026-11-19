@@ -159,13 +159,24 @@ function build(script, material) {
   const overview = m.overview || (script.intro && script.intro.narration);
   if (overview) body.push(para(overview));
   if (m.audience) body.push(para('适用对象：' + m.audience));
+  if (script.thesis) {
+    const t = script.thesis;
+    if (t.why) body.push(para('业务背景与建设初衷：' + t.why));
+    if (t.coreContradiction) body.push(para('核心解决矛盾：' + t.coreContradiction));
+    if (t.mainline) body.push(para('核心业务主线：' + t.mainline));
+    if (Array.isArray(t.keyDesigns) && t.keyDesigns.length) {
+      body.push(heading('1.1 核心设计与防错机制', HeadingLevel.HEADING_2));
+      for (const kd of t.keyDesigns) body.push(new Paragraph({ numbering: { reference: 'bullets', level: 0 }, spacing: { line: 360 }, children: [run(kd)] }));
+    }
+  }
   const shared = script.features ? script.features.shared : [];
   if (shared.length) {
     body.push(para('本手册只介绍本模块特有的操作。' + shared.map((f) => quote(f.name)).join('、')
       + '等通用操作的方法与系统其他页面相同，请参阅《' + script.sharedGuide + '》。'));
   }
   if (m.prerequisites.length) {
-    body.push(heading('1.1 前置条件', HeadingLevel.HEADING_2));
+    const preNo = script.thesis && Array.isArray(script.thesis.keyDesigns) && script.thesis.keyDesigns.length ? '1.2 ' : '1.1 ';
+    body.push(heading(preNo + '前置条件', HeadingLevel.HEADING_2));
     for (const p of m.prerequisites) body.push(new Paragraph({ numbering: { reference: 'bullets', level: 0 }, spacing: { line: 360 }, children: [run(p)] }));
   }
 

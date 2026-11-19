@@ -67,6 +67,17 @@
   .tag.write { background: #fff4e5; color: var(--warn); }
   .tag.new { background: #e7f0ff; color: var(--primary); }
   .tag.removed { background: #fdeceb; color: var(--err); }
+  .tag.core { background: #fee2e2; color: #b91c1c; font-weight: 600; }
+  .tag.supporting { background: #e0f2fe; color: #0369a1; }
+  .tag.routine { background: #f3f4f6; color: #4b5563; }
+  .thesis-card {
+    background: #fff; border: 1px solid #c7d2fe; border-left: 4px solid var(--primary);
+    border-radius: 10px; padding: 14px 18px; margin-bottom: 16px;
+  }
+  .thesis-card h2 { font-size: 14px; margin: 0 0 8px; color: var(--primary-dark); }
+  .thesis-card .row { font-size: 13px; margin: 4px 0; }
+  .thesis-card .row b { color: var(--text); }
+  .thesis-card ul { margin: 4px 0 4px 20px; padding: 0; font-size: 13px; }
   .scene-ok { color: var(--ok); font-size: 12px; }
   .scene-miss { color: var(--err); font-size: 12px; }
 
@@ -101,6 +112,7 @@
 
 <main>
   <div id="environment" class="bar"></div>
+  <section id="thesisBox" class="thesis-card" hidden></section>
   <section id="loginWait" class="confirm-data" hidden>
     <h2>等待登录完成</h2>
     <p id="loginSummary"></p>
@@ -145,6 +157,11 @@ const TIER_LABEL = {
   isolated: '第一级：隔离库（洁净基线数据 + 快照回滚全链路真演练）',
   'shared-test': '第二级：共享测试库（视图筛选降噪 + 真实提交演示）',
   restricted: '第三级：受限环境（只演示不触发写接口）',
+};
+const PRIORITY_LABEL = {
+  core: '🔥 核心主线',
+  supporting: '支撑功能',
+  routine: '常规操作',
 };
 
 let file = new URLSearchParams(location.search).get('f') || '';
@@ -204,6 +221,20 @@ function render() {
   $('#environment').textContent = '环境：' + (data.environment.name || '未命名')
     + (data.environment.tier ? '（' + (TIER_LABEL[data.environment.tier] || data.environment.tier) + '）' : '') + ' · '
     + (data.environment.testData ? '允许写入测试数据（每轮提交前再次确认）' : '不允许写入测试数据，仅可取消');
+  const tb = $('#thesisBox');
+  if (data.thesis) {
+    tb.hidden = false;
+    const t = data.thesis;
+    tb.innerHTML = '<h2>模块业务总纲（抓主要矛盾与设计巧思）</h2>'
+      + (t.why ? '<div class="row"><b>为什么做（业务痛点）：</b>' + esc(t.why) + '</div>' : '')
+      + (t.coreContradiction ? '<div class="row"><b>主要矛盾：</b>' + esc(t.coreContradiction) + '</div>' : '')
+      + (t.mainline ? '<div class="row"><b>核心主线闭环：</b>' + esc(t.mainline) + '</div>' : '')
+      + (t.keyDesigns && t.keyDesigns.length ? '<div class="row"><b>核心设计巧思与防错机制：</b><ul>' + t.keyDesigns.map((d) => '<li>' + esc(d) + '</li>').join('') + '</ul></div>' : '')
+      + (t.dataDesign ? '<div class="row"><b>体现设计的造数方案：</b>' + esc(t.dataDesign) + '</div>' : '');
+  } else {
+    tb.hidden = true;
+    tb.innerHTML = '';
+  }
   const rows = data.pages.map((p) => {
     const feats = data.features.filter((f) => f.page === p.id);
     if (!feats.length) return '';
@@ -211,6 +242,7 @@ function render() {
       + '<div class="table-wrap"><table><thead><tr><th></th><th>功能</th><th style="width:190px">演练 / 正式录制</th><th style="width:260px">条件与前提</th><th style="width:150px">脚本场景</th></tr></thead><tbody>'
       + feats.map((f) => {
         const tags = '<span class="tag ' + f.kind + '">' + (f.kind === 'write' ? '写数据' : '只读') + '</span>'
+          + (f.priority && PRIORITY_LABEL[f.priority] ? '<span class="tag ' + f.priority + '">' + PRIORITY_LABEL[f.priority] + '</span>' : '')
           + (f.status === 'new' ? '<span class="tag new">新增</span>' : '')
           + (f.status === 'changed' ? '<span class="tag write">信息有变化</span>' : '')
           + (f.status === 'removed' ? '<span class="tag removed">已从系统中消失</span>' : '');

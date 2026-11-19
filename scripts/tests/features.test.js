@@ -134,3 +134,34 @@ test('三级环境 tier 校验与 dependsOn 前后强状态依赖校验', (t) =>
   fs.writeFileSync(f.fresh, YAML.stringify(badDep));
   assert.throws(() => loadFeatures(f.fresh), /dependsOn.*不在 features 清单里/);
 });
+
+test('模块业务总纲 thesis 与功能主次分级 priority 加载、合并及手册继承', (t) => {
+  const f = fixture(t);
+  f.source.thesis = {
+    why: '解决项目总预算与各阶段动态拆解的口径失控问题',
+    coreContradiction: '阶段占比 100% 闭环约束 vs 动态任务拆解的矛盾',
+    mainline: '建库定基准 → 阶段占比闭环 → 批量录入与防错核验',
+    keyDesigns: ['共享预算组按任务工时动态反算占比', '批量录入仅填空白项保护与预校验原子回滚'],
+    dataDesign: '用已填行与空白行同屏对比展示仅填空白项，用 100.50% 超限展示闭环拦截',
+  };
+  f.source.features[0].priority = 'core';
+  f.save(f.source);
+
+  const loaded = loadFeatures(f.saved);
+  assert.equal(loaded.thesis.why, '解决项目总预算与各阶段动态拆解的口径失控问题');
+  assert.equal(loaded.features[0].priority, 'core');
+
+  // thesis 或 priority 变化在 mergeFresh 时触发重新确认并保留新总纲
+  const next = structuredClone(f.source);
+  next.thesis.mainline = '建库 → 占比闭环 → 批量拆解 → 归档';
+  fs.writeFileSync(f.fresh, YAML.stringify(next));
+  const merged = mergeFresh(f.saved, f.fresh);
+  assert.equal(merged.changed, true);
+  assert.equal(loadFeatures(f.saved).thesis.mainline, '建库 → 占比闭环 → 批量拆解 → 归档');
+
+  // 非法 priority 拒绝加载
+  const badPri = structuredClone(f.source);
+  badPri.features[0].priority = 'urgent';
+  fs.writeFileSync(f.fresh, YAML.stringify(badPri));
+  assert.throws(() => loadFeatures(f.fresh), /priority 只能是 core \/ supporting \/ routine/);
+});
