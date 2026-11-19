@@ -226,13 +226,25 @@ async function whyNotVisible(page, candidates) {
   return hints.length ? '（' + hints.join('；') + '）' : '';
 }
 
-/** 轮询所有候选，返回第一个可见的；index > 0 说明主定位已失效、靠降级命中 */
+/** 轮询所有候选，返回第一个可见的；若候选存在于 DOM 且非 display:none 但因超出横/纵滚动容器尚未进视窗，先将其滚入视窗中心再判可见 */
 async function findVisible(page, candidates, timeout) {
   const deadline = Date.now() + timeout;
+  let scrolledOnce = false;
   for (;;) {
     for (let i = 0; i < candidates.length; i++) {
       const locator = toLocator(page, candidates[i]);
       if (await locator.isVisible().catch(() => false)) return { locator, index: i };
+    }
+    if (!scrolledOnce) {
+      scrolledOnce = true;
+      for (let i = 0; i < candidates.length; i++) {
+        const rawLoc = toLocator(page, candidates[i], false);
+        if (await rawLoc.count().catch(() => 0)) {
+          await revealInViewport(rawLoc.first());
+          const locator = toLocator(page, candidates[i]);
+          if (await locator.isVisible().catch(() => false)) return { locator, index: i };
+        }
+      }
     }
     if (Date.now() > deadline) {
       throw new Error('找不到可见元素：' + candidates.map(describe).join(' ｜ ') + (await whyNotVisible(page, candidates)));
@@ -293,8 +305,45 @@ async function cleanShot(page, file, box) {
   return path.relative(HERE, file).replace(/\\/g, '/');
 }
 
-async function capture(page, loc, file) {
+/**
+ * 将目标元素横纵双向滚入最近可滚动容器与视窗的中心舒适区。
+ * 解决宽表格右侧列（如 el-table 横向滚动 + 右侧 fixed 列遮挡）、长抽屉/长弹窗下半屏内容不在视窗内的问题。
+ */
+async function revealInViewport(loc) {
   await loc.scrollIntoViewIfNeeded().catch(() => {});
+  await loc.evaluate((el) => {
+    el.scrollIntoView({ block: 'center', inline: 'center', behavior: 'instant' });
+    // 兼容自定义横纵滚动容器（如 Element Plus 的 .el-scrollbar__wrap / .el-table__body-wrapper / .el-drawer__body）
+    let p = el.parentElement;
+    while (p && p !== document.body && p !== document.documentElement) {
+      const style = getComputedStyle(p);
+      const canX = (p.scrollWidth > p.clientWidth + 4) && /(auto|scroll)/.test(style.overflowX);
+      const canY = (p.scrollHeight > p.clientHeight + 4) && /(auto|scroll)/.test(style.overflowY);
+      if (canX || canY) {
+        const er = el.getBoundingClientRect();
+        const pr = p.getBoundingClientRect();
+        if (canX) {
+          const targetCenter = (er.left + er.right) / 2;
+          const containerCenter = (pr.left + pr.right) / 2;
+          if (Math.abs(targetCenter - containerCenter) > pr.width * 0.28) {
+            p.scrollLeft += (targetCenter - containerCenter);
+          }
+        }
+        if (canY) {
+          const targetMiddle = (er.top + er.bottom) / 2;
+          const containerMiddle = (pr.top + pr.bottom) / 2;
+          if (Math.abs(targetMiddle - containerMiddle) > pr.height * 0.28) {
+            p.scrollTop += (targetMiddle - containerMiddle);
+          }
+        }
+      }
+      p = p.parentElement;
+    }
+  }).catch(() => {});
+}
+
+async function capture(page, loc, file) {
+  await revealInViewport(loc);
   const info = await loc.evaluate(DESCRIBE_EL);
   const box = await loc.boundingBox();
   if (!box) return info;
@@ -309,7 +358,7 @@ function makeCtx(page) {
   const ctx = {
     page,
     async moveTo(loc) {
-      await loc.scrollIntoViewIfNeeded().catch(() => {});
+      await revealInViewport(loc);
       const box = await loc.boundingBox();
       if (box) {
         await page.mouse.move(box.x + box.width / 2, box.y + box.height / 2, { steps: DRY ? 1 : CFG.moveSteps });
@@ -344,7 +393,9 @@ async function runAction(ctx, adapters, a, notes, step) {
     const hit = await ctx.findVisible(a.target);
     hitName = describe(a.target[hit.index]);
     if (hit.index > 0) notes.push('主定位失效，降级命中第 ' + (hit.index + 1) + ' 个候选：' + hitName);
-    if (SHOTS && a.doc !== false) Object.assign(step, await capture(page, hit.locator, path.join(SHOT_DIR, step.id + '.png')));
+    if (SHOTS && a.doc !== false && a.op !== 'hover' && a.op !== 'waitFor' && a.op !== 'scroll') {
+      Object.assign(step, await capture(page, hit.locator, path.join(SHOT_DIR, step.id + '.png')));
+    }
     return hit.locator;
   };
 
@@ -410,8 +461,13 @@ async function runAction(ctx, adapters, a, notes, step) {
       await page.keyboard.press(a.key);
       return a.key;
     case 'scroll':
-      await page.mouse.wheel(0, a.y);
-      return String(a.y);
+      if (a.target) {
+        const el = await locate();
+        await revealInViewport(el);
+        return hitName;
+      }
+      await page.mouse.wheel(a.x || 0, a.y || 0);
+      return (a.x ? 'x=' + a.x + ',' : '') + String(a.y || 0);
     case 'wait':
       await wait(a.ms);
       return a.ms + 'ms';
@@ -669,7 +725,8 @@ async function main() {
         guard.grant(a.prepare ? scene.preparationRequests : i >= scene.expectAt && scene.writeMode === 'submit' ? scene.writeRequests : []);
         const step = { id: scene.id + '-' + String(i + 1).padStart(2, '0'), op: a.op, label: a.label || '',
           ...(a.doc === false ? { doc: false } : {}),
-          text: a.text, value: a.value, key: a.key, url: a.url, y: a.y };
+          ...(a.target && a.op === 'scroll' ? { target: true } : {}),
+          text: a.text, value: a.value, key: a.key, url: a.url, y: a.y, x: a.x };
         doc.steps.push(step);
         if (!DRY && a.cue !== undefined) {
           const due = audioAt + narr * a.cue - CFG.cueLead;

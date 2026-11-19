@@ -156,3 +156,26 @@ test('同一段旁白中后续动作的 at 从前序动作命中位置往后查�
   assert.equal(record.scenes[0].actions[4].doc, false, 'ending.submit 里的 doc: false 应保留');
   assert.ok(record.scenes[0].altSpeech && record.scenes[0].altSpeech.includes('暂不提交时点击取消'), '正式阶段应编译出 cancel 分支的 altSpeech');
 });
+
+test('scroll 支持像素值、{x, y} 双向滚动及按 target 目标元素滚入视窗中央', (t) => {
+  const f = endingFixtureRaw(t,
+    { cancel: { narration: '返回。', actions: [{ click: { text: '取消' }, at: '返回' }] } },
+    {
+      narration: '先向下看列表，再横向滚到右侧查看标准任务豆列。',
+      actions: [
+        { scroll: 400 },
+        { scroll: { x: 600, y: 0 }, at: '横向滚到右侧' },
+        { scroll: { text: '标准任务豆' }, at: '查看标准任务豆列' },
+      ],
+    });
+  const compiled = loadScript(f, { stage: 'rehearsal' });
+  const acts = compiled.scenes[0].actions;
+  assert.equal(acts[0].op, 'scroll');
+  assert.equal(acts[0].y, 400);
+  assert.equal(acts[1].op, 'scroll');
+  assert.equal(acts[1].x, 600);
+  assert.equal(acts[1].y, 0);
+  assert.equal(acts[2].op, 'scroll');
+  assert.equal(acts[2].target[0].by, 'text');
+  assert.equal(acts[2].target[0].value, '标准任务豆');
+});

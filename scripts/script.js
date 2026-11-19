@@ -182,6 +182,16 @@ function normActionBody(raw, where, baseUrl, baseDir, recordedUploads) {
     case 'press':
       return { op, key: String(arg) };
     case 'scroll':
+      if (arg && typeof arg === 'object') {
+        if (!Array.isArray(arg) && (arg.y !== undefined || arg.x !== undefined) && !LOCATOR_KEYS.some((k) => arg[k] !== undefined) && arg.target === undefined) {
+          return {
+            op,
+            ...(arg.x !== undefined ? { x: numeric(arg.x, where + ' scroll.x') } : {}),
+            y: arg.y !== undefined ? numeric(arg.y, where + ' scroll.y') : 0,
+          };
+        }
+        return { op, target: normTarget(arg.target !== undefined ? arg.target : arg, where + ' scroll') };
+      }
       return { op, y: numeric(arg, where + ' scroll') };
     case 'wait':
       return { op, ms: milliseconds(arg, where + ' wait') };

@@ -64,7 +64,7 @@ function stepText(st) {
     case 'waitFor': return null;
     case 'press': return '按下键盘' + bracket(st.key) + '键';
     case 'goto': return null;
-    case 'scroll': return st.y > 0 ? '向下滚动页面' : '向上滚动页面';
+    case 'scroll': return st.target || st.y === undefined ? null : (st.y > 0 ? '向下滚动页面' : '向上滚动页面');
     case 'wait': return null;
     default: throw new Error('手册不认识的动作：' + st.op);
   }

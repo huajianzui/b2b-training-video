@@ -833,3 +833,51 @@ test('switchUser 无感切角支持环境变量密码、RequestGuard 保护及 e
   assert.equal(result.code, 0, result.log);
   assert.deepEqual(logins, ['pm_user:secret-switch-pwd', 'auditor_user:secret-switch-pwd']);
 });
+
+test('宽表格与长容器外的内容通过 scroll: target 自动移动横/纵滚动条进入视窗中心', { timeout: 60000 }, async (t) => {
+  const f = await fixture(t, { rehearsal: 'cancel', record: 'cancel' });
+  if (!f) return;
+
+  const wideLongHtml = [
+    '<!doctype html><meta charset="utf-8"><title>宽表与长页视窗对齐</title>',
+    '<div id="table-wrap" style="width: 500px; height: 200px; overflow: auto; border: 1px solid #ccc;">',
+    '  <div style="width: 2400px; height: 900px; position: relative;">',
+    '    <div id="far-cell" style="position: absolute; left: 1950px; top: 680px; width: 160px; height: 40px;">标准任务豆汇总列</div>',
+    '  </div>',
+    '</div>',
+    '<div id="scroll-state">0,0</div>',
+    '<script>',
+    'const w = document.getElementById("table-wrap");',
+    'w.addEventListener("scroll", () => {',
+    '  if (w.scrollLeft > 1200 && w.scrollTop > 400) {',
+    '    document.getElementById("scroll-state").textContent = "已滚入视窗中心";',
+    '  }',
+    '});',
+    '</script>',
+  ].join('');
+
+  const pageFile = path.join(f.root, 'wide-table.html');
+  fs.writeFileSync(pageFile, wideLongHtml);
+
+  const doc = {
+    title: '视窗滚屏对齐测试',
+    url: './wide-table.html',
+    adapters: [],
+    login: { enabled: false },
+    scenes: [
+      {
+        id: 'scroll-into-view',
+        name: '展示宽表右侧列',
+        narration: '讲解右侧被遮挡的标准任务豆汇总列时，先移动滚动条把它展示在视窗内。',
+        actions: [
+          { goto: './wide-table.html' },
+          { scroll: { text: '标准任务豆汇总列' }, at: '先移动滚动条' },
+        ],
+        expect: { text: '已滚入视窗中心' },
+      },
+    ],
+  };
+  fs.writeFileSync(f.file, YAML.stringify(doc));
+  const result = await f.start('play.js', ['demo.yaml', '--dry', '--shots']).done;
+  assert.equal(result.code, 0, result.log);
+});
