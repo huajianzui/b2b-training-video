@@ -395,6 +395,9 @@ async function runAction(ctx, adapters, a, notes, step) {
     if (hit.index > 0) notes.push('主定位失效，降级命中第 ' + (hit.index + 1) + ' 个候选：' + hitName);
     if (SHOTS && a.doc !== false && a.op !== 'hover' && a.op !== 'waitFor' && a.op !== 'scroll') {
       Object.assign(step, await capture(page, hit.locator, path.join(SHOT_DIR, step.id + '.png')));
+      if (a.op === 'click' && !step.label && !step.name) {
+        notes.push('步骤 ' + step.id + ' 未识别到控件文字（手册将显示为「点击目标位置」），建议补充 label 或加 doc: false');
+      }
     }
     return hit.locator;
   };

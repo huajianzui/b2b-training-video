@@ -200,6 +200,9 @@ function build(script, material) {
       const st = { ...originalStep, label: act?.label || '', doc: act?.doc === false ? false : originalStep.doc };
       const text = stepText(st);
       if (!text) continue;
+      if (text === '点击目标位置') {
+        console.warn('⚠ [手册提示] 场景 ' + scene.id + ' 第 ' + (index + 1) + ' 个动作未识别出控件名称（手册中显示为「点击目标位置」）：若属于业务步骤请补 label，若属于关闭遮罩/确认框等辅助动作请加 doc: false');
+      }
       body.push(new Paragraph({ numbering: { reference: ref, level: 0 }, keepLines: true, keepNext: !!st.shot,
         spacing: { before: 120, after: 60, line: 360 }, children: [run(text)] }));
       if (st.shot) body.push(...image(st.shot, text, ++fig));

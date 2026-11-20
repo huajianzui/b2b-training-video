@@ -19,11 +19,20 @@ function findPython() {
 
 function ensureFonts() {
   const dir = path.join(__dirname, 'assets'), sys = path.join(process.env.WINDIR || 'C:/Windows', 'Fonts');
+  const fallbacks = [
+    '/System/Library/Fonts/PingFang.ttc',
+    '/System/Library/Fonts/STHeiti Medium.ttc',
+    '/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc',
+    '/usr/share/fonts/noto-cjk/NotoSansCJK-Regular.ttc',
+    '/usr/share/fonts/truetype/wqy/wqy-microhei.ttc',
+  ];
   for (const name of ['msyh.ttc', 'msyhbd.ttc']) {
     const target = path.join(dir, name);
     if (fs.existsSync(target)) continue;
-    if (!fs.existsSync(path.join(sys, name))) throw new Error('缺少中文字体 assets/' + name + '，请准备可用的中文字体后重试。');
-    fs.mkdirSync(dir, { recursive: true }); fs.copyFileSync(path.join(sys, name), target);
+    const winFont = path.join(sys, name);
+    const source = fs.existsSync(winFont) ? winFont : fallbacks.find((f) => fs.existsSync(f));
+    if (!source) throw new Error('缺少中文字体 assets/' + name + '，请准备可用的中文字体后重试。');
+    fs.mkdirSync(dir, { recursive: true }); fs.copyFileSync(source, target);
   }
 }
 
