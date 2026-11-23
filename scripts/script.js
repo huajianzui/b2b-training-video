@@ -384,22 +384,34 @@ const BUILTIN_CHECKED = ['参与', '参加', '参照', '调度', '卡片', '行�
 
 const FORBIDDEN_META_NARRATION = /演练阶段|本次只演示|本片段未执行|不实际发布|不实际提交|不会产生任何业务数据|不产生任何业务数据|不修改真实数据/;
 
-function narrationWarnings(scenes, intro, outro) {
-  const warnings = [];
+function assertCardAndEntryNorms(doc, scenes, intro, outro) {
   if (intro && intro.narration) {
     const t = String(intro.narration);
     const han = t.replace(/[^\u4e00-\u9fa5]/g, '').length;
     if (han > 25 || /包括.*、|请跟随画面操作/.test(t)) {
-      warnings.push('intro：片头旁白过长（' + han + '字）或含步骤罗列套话，须精简为一句话（≤25字，如「本视频演示……的操作流程。」）');
+      throw new ScriptError('intro：片头旁白过长（' + han + '字）或含步骤罗列套话，须精简为一句话（≤25字，如「本视频演示……的操作流程。」）');
     }
   }
   if (outro && outro.narration) {
     const t = String(outro.narration);
     const han = t.replace(/[^\u4e00-\u9fa5]/g, '').length;
     if (han > 20) {
-      warnings.push('outro：片尾旁白过长（' + han + '字），须精简为一句话（≤20字，如「以上就是……的操作演示，感谢观看。」）');
+      throw new ScriptError('outro：片尾旁白过长（' + han + '字），须精简为一句话（≤20字，如「以上就是……的操作演示，感谢观看。」）');
     }
   }
+  if (doc && doc.intro && doc.outro && doc.manual && scenes.length > 0) {
+    const s0 = scenes[0];
+    if (!/菜单|导航|左侧|顶部/.test(s0.narration || '')) {
+      throw new ScriptError(s0.id + '：介绍功能首先要让观众找到功能，首场景旁白必须交代如何通过菜单进入该功能（如「首先在左侧菜单点击……，进入……」），勿跳过菜单导航');
+    }
+    if (!(s0.actions || []).some((a) => a.type === 'click')) {
+      throw new ScriptError(s0.id + '：介绍功能首先要让观众找到功能，首场景必须包含点击菜单/页签进入功能页面的 click 动作，不能仅靠 goto 跳过菜单导航');
+    }
+  }
+}
+
+function narrationWarnings(scenes) {
+  const warnings = [];
   if (scenes.length > 0 && scenes[0].narration) {
     const s0 = scenes[0];
     if (!/菜单|导航|左侧|顶部/.test(s0.narration)) {
@@ -560,6 +572,7 @@ function normalize(doc, file, { stage = 'record', recordedUploads = [] } = {}) {
   if (!scenes.length) throw new ScriptError('按功能清单筛选后没有可演示的场景');
   const intro = normCard(doc.intro, String(doc.title || '操作演示'), speech);
   const outro = normCard(doc.outro, '演示结束', speech);
+  assertCardAndEntryNorms(doc, scenes, intro, outro);
   const narrations = [intro, outro, ...scenes].filter((x) => x && x.narration).map((x) => String(x.narration));
 
   const readOnlyRequests = normalizeRequests(doc.readOnlyRequests, url, 'readOnlyRequests', { readOnly: true });
