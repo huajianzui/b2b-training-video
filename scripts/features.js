@@ -215,6 +215,7 @@ function validateDecisions(manifest, { requireRehearsal = true } = {}) {
     if (requireRehearsal && !f.rehearsalMode) throw new FeatureError('功能「' + f.name + '」缺少 rehearsalMode：请在确认页单独选择演练取消或真实提交。');
     if (f.writeMode === 'submit' || f.rehearsalMode === 'submit') {
       if (f.blocked || f.submitRestriction) throw new FeatureError('功能「' + f.name + '」不能 submit：' + (f.submitRestriction || f.blocked));
+      if (manifest.environment.tier === 'restricted') throw new FeatureError('三级环境与数据洁净度分级为 restricted（受限环境）时，功能「' + f.name + '」不能设为 submit。');
       if (!manifest.environment.testData) throw new FeatureError('环境不允许写测试数据（environment.testData 不是 true），功能「' + f.name + '」不能 submit。');
       if (!f.writeRequests.length) throw new FeatureError('功能「' + f.name + '」缺少 writeRequests：核对业务代码后填写真实提交接口，再重新确认。');
     }
@@ -376,6 +377,12 @@ if (require.main === module) {
     } else {
       if (!cmd) throw new FeatureError('用法：node features.js <清单> [--yes]');
       const file = path.resolve(cmd);
+      if (CLI.values.yes) {
+        const pre = loadFeatures(file);
+        if (!pre.environment.tier) {
+          throw new FeatureError('缺少 environment.tier（三级环境与数据洁净度分级）：请先向用户询问确认采用 isolated（独立隔离库+洁净黄金基线+快照回滚真演练）、shared-test（共享测试环境+视图筛选降噪+真实提交）或 restricted（受限环境+只演示填完取消不触发写接口），写入 environment.tier 后再执行 --yes。');
+        }
+      }
       const f = CLI.values.yes ? saveDecisions(file, {}, true) : loadFeatures(file);
       const on = f.features.filter((x) => x.include);
       console.log(f.module + '：' + f.pages.length + ' 个页面，' + f.features.length + ' 个功能，勾选 ' + on.length + ' 个'

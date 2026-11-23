@@ -164,4 +164,12 @@ test('模块业务总纲 thesis 与功能主次分级 priority 加载、合并�
   badPri.features[0].priority = 'urgent';
   fs.writeFileSync(f.fresh, YAML.stringify(badPri));
   assert.throws(() => loadFeatures(f.fresh), /priority 只能是 core \/ supporting \/ routine/);
+
+  // restricted 环境分级禁止将写功能设为 submit
+  const restrictedDoc = structuredClone(f.source);
+  restrictedDoc.environment = { name: '准生产环境', tier: 'restricted', testData: true };
+  restrictedDoc.features[0].include = true;
+  restrictedDoc.features[0].rehearsalMode = 'submit';
+  fs.writeFileSync(f.saved, YAML.stringify(restrictedDoc));
+  assert.throws(() => saveDecisions(f.saved, {}, true), /三级环境与数据洁净度分级为 restricted/);
 });

@@ -67,6 +67,10 @@ script: {{script}}
 generatedBy: {{model}}
 generatedAt: {{date}}
 confirmedAt: ~                       # 固定写 ~，用户确认后回写
+environment:
+  name: 待向用户确认                  # 环境名称
+  tier: ~                            # 必填（向用户提问确认后填写）：isolated | shared-test | restricted（三级环境与数据洁净度分级）
+  testData: false                    # isolated / shared-test 为 true，restricted 为 false
 thesis:
   why: 为什么建设本模块（解决的核心管理痛点与上下游位置）
   coreContradiction: 本模块要解决的主要矛盾
