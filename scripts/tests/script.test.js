@@ -206,4 +206,18 @@ test('严禁旁白出现内部演练话术、过长片头片尾及首场景跳�
   f.source.scenes[0].actions = [{ goto: '/orders' }];
   f.save();
   assert.throws(() => loadScript(f.file), /首场景必须包含点击菜单\/页签进入功能页面的 click 动作/);
+
+  // 即使手写 confirmedAt 绕过 features.js --yes，只要未填 environment.tier 也在编译阶段直接拦截
+  const featFile = path.join(path.dirname(f.file), 'demo.features.yaml');
+  fs.writeFileSync(featFile, YAML.stringify({
+    module: '项目管理',
+    confirmedAt: '2026-11-23T00:00:00.000Z',
+    environment: { name: '测试环境', testData: false },
+    pages: [{ id: 'list', name: '列表', entry: '左侧菜单', route: '/orders', files: ['a.vue'] }],
+    features: [{ id: 'list.view', page: 'list', name: '查看列表', kind: 'read', include: true }],
+  }));
+  f.source.features = 'demo.features.yaml';
+  f.source.scenes[0].actions = [{ click: { text: '项目管理' }, at: '点击项目管理' }];
+  f.save();
+  assert.throws(() => loadScript(f.file), /缺少 environment\.tier（三级环境与数据洁净度分级）/);
 });

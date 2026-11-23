@@ -384,7 +384,7 @@ const BUILTIN_CHECKED = ['参与', '参加', '参照', '调度', '卡片', '行�
 
 const FORBIDDEN_META_NARRATION = /演练阶段|本次只演示|本片段未执行|不实际发布|不实际提交|不会产生任何业务数据|不产生任何业务数据|不修改真实数据/;
 
-function assertCardAndEntryNorms(doc, scenes, intro, outro) {
+function assertCardAndEntryNorms(doc, scenes, intro, outro, feat) {
   if (intro && intro.narration) {
     const t = String(intro.narration);
     const han = t.replace(/[^\u4e00-\u9fa5]/g, '').length;
@@ -400,6 +400,9 @@ function assertCardAndEntryNorms(doc, scenes, intro, outro) {
     }
   }
   if (doc && doc.intro && doc.outro && doc.manual && scenes.length > 0) {
+    if (feat && !feat.environment.tier) {
+      throw new ScriptError('功能清单「' + path.basename(feat.file) + '」缺少 environment.tier（三级环境与数据洁净度分级）：请先向用户询问确认采用 isolated（独立隔离库+洁净黄金基线+快照回滚真演练）、shared-test（共享测试环境+视图筛选降噪+真实提交）或 restricted（受限环境+只演示填完取消不触发写接口），写入 environment.tier 后再编译出片');
+    }
     const s0 = scenes[0];
     if (!/菜单|导航|左侧|顶部/.test(s0.narration || '')) {
       throw new ScriptError(s0.id + '：介绍功能首先要让观众找到功能，首场景旁白必须交代如何通过菜单进入该功能（如「首先在左侧菜单点击……，进入……」），勿跳过菜单导航');
@@ -572,7 +575,7 @@ function normalize(doc, file, { stage = 'record', recordedUploads = [] } = {}) {
   if (!scenes.length) throw new ScriptError('按功能清单筛选后没有可演示的场景');
   const intro = normCard(doc.intro, String(doc.title || '操作演示'), speech);
   const outro = normCard(doc.outro, '演示结束', speech);
-  assertCardAndEntryNorms(doc, scenes, intro, outro);
+  assertCardAndEntryNorms(doc, scenes, intro, outro, feat);
   const narrations = [intro, outro, ...scenes].filter((x) => x && x.narration).map((x) => String(x.narration));
 
   const readOnlyRequests = normalizeRequests(doc.readOnlyRequests, url, 'readOnlyRequests', { readOnly: true });
