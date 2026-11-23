@@ -179,3 +179,19 @@ test('scroll 支持像素值、{x, y} 双向滚动及按 target 目标元素滚�
   assert.equal(acts[2].target[0].by, 'text');
   assert.equal(acts[2].target[0].value, '标准任务豆');
 });
+
+test('严禁旁白出现内部演练话术，且对过长片头片尾与首场景缺菜单指路给出告警', (t) => {
+  const f = fixture(t);
+  f.source.scenes[0].narration = '演练阶段只核对表单，不实际发布，不会产生任何业务数据变更。';
+  f.save();
+  assert.throws(() => loadScript(f.file), /旁白严禁包含内部演练\/测试话术/);
+
+  f.source.intro = { narration: '本视频演示如何在招标采购平台发布一个待发布项目，包括打开列表、筛选待发布项目、填写时间。请跟随画面操作。' };
+  f.source.outro = { narration: '以上就是发布项目的完整操作。正式发布前，请再次核对时间，并确认供应商已完成实名认证。' };
+  f.source.scenes[0].narration = '首先进入竞价项目列表查看所有项目。';
+  f.save();
+  const compiled = loadScript(f.file);
+  assert.ok(compiled.narrationWarnings.some((w) => w.includes('intro：片头旁白过长')));
+  assert.ok(compiled.narrationWarnings.some((w) => w.includes('outro：片尾旁白过长')));
+  assert.ok(compiled.narrationWarnings.some((w) => w.includes('首场景旁白未介绍如何通过菜单进入该功能')));
+});

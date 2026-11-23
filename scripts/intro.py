@@ -78,8 +78,8 @@ ACCENT_INTRO = "0x2f7fd0"
 ACCENT_OUTRO = "0x4a7c59"
 
 DEFAULT_NARRATION = {
-    "intro": "本视频演示系统的完整操作流程，请跟随画面操作。",
-    "outro": "以上就是本次演示的全部内容。",
+    "intro": "本视频演示该模块的核心操作流程。",
+    "outro": "以上就是本次操作演示，感谢观看。",
 }
 
 
@@ -394,8 +394,8 @@ def make_card(position, spec, common, tmp_dir, out_dir):
         n_dur = duration_of(tts_reused)
         if n_dur is None:
             die("无法读取配音时长")
-        min_dur = 5.0 if position == "intro" else 4.0
-        dur = max(n_dur + LEAD + 1.0, min_dur)
+        min_dur = 3.6 if position == "intro" else 3.0
+        dur = max(n_dur + LEAD + 0.6, min_dur)
     else:
         dur, n_dur = 4.0, None
 

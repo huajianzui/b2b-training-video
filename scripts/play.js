@@ -231,18 +231,23 @@ async function findVisible(page, candidates, timeout) {
   const deadline = Date.now() + timeout;
   let scrolledOnce = false;
   for (;;) {
+    const roots = [page, ...page.frames().filter((f) => f !== page.mainFrame())];
     for (let i = 0; i < candidates.length; i++) {
-      const locator = toLocator(page, candidates[i]);
-      if (await locator.isVisible().catch(() => false)) return { locator, index: i };
+      for (const root of roots) {
+        const locator = toLocator(root, candidates[i]);
+        if (await locator.isVisible().catch(() => false)) return { locator, index: i };
+      }
     }
     if (!scrolledOnce) {
       scrolledOnce = true;
       for (let i = 0; i < candidates.length; i++) {
-        const rawLoc = toLocator(page, candidates[i], false);
-        if (await rawLoc.count().catch(() => 0)) {
-          await revealInViewport(rawLoc.first());
-          const locator = toLocator(page, candidates[i]);
-          if (await locator.isVisible().catch(() => false)) return { locator, index: i };
+        for (const root of roots) {
+          const rawLoc = toLocator(root, candidates[i], false);
+          if (await rawLoc.count().catch(() => 0)) {
+            await revealInViewport(rawLoc.first());
+            const locator = toLocator(root, candidates[i]);
+            if (await locator.isVisible().catch(() => false)) return { locator, index: i };
+          }
         }
       }
     }
@@ -445,13 +450,36 @@ async function runAction(ctx, adapters, a, notes, step) {
     case 'fill': {
       const el = await editable(await locate());
       await ctx.click(el, a.target);
+      const valText = String(a.text ?? '');
+      const isDateLike = /^\d{4}[-/]\d{1,2}[-/]\d{1,2}/.test(valText.trim())
+        || await el.evaluate((node) => {
+          const attr = [node.className, node.id, node.getAttribute('placeholder'), node.getAttribute('lay-key'), node.getAttribute('onclick')].filter(Boolean).join(' ');
+          return /laydate|Wdate|date|time|日期|时间/i.test(attr) || Boolean(node.closest('.el-date-editor'));
+        }).catch(() => false);
       await el.fill('');
-      if (DRY) await el.fill(a.text);
-      else {
+      if (DRY || isDateLike) {
+        await el.fill(valText);
+      } else {
         // 长文本输入自适应提速，单次输入封顶约 1.1s，避免长备注拖慢后续 at 锚点导致音画脱节
-        const len = Math.max(1, [...String(a.text || '')].length);
+        const len = Math.max(1, [...valText].length);
         const delay = Math.min(CFG.typeDelay, Math.max(20, Math.floor(1100 / len)));
-        await el.pressSequentially(a.text, { delay });
+        await el.pressSequentially(valText, { delay });
+      }
+      // 强制回读校验：若逐字输入被日期控件或格式校验弹窗打断（如只剩首字符 "2"），立即原子回填并校验
+      const actual = await el.inputValue().catch(() => null);
+      if (actual !== null && actual.trim() !== valText.trim()) {
+        await el.fill(valText);
+        const retryActual = await el.inputValue().catch(() => null);
+        if (retryActual !== null && retryActual.trim() !== valText.trim()) {
+          throw new Error('输入框实际值与目标值不一致（目标「' + valText + '」，实际「' + retryActual + '」），可能被前端格式校验或日历控件拦截');
+        }
+      }
+      if (isDateLike) {
+        await el.evaluate((node) => {
+          node.dispatchEvent(new Event('input', { bubbles: true }));
+          node.dispatchEvent(new Event('change', { bubbles: true }));
+        }).catch(() => {});
+        await page.keyboard.press('Escape').catch(() => {});
       }
       return hitName + ' ← ' + a.text;
     }

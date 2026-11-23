@@ -17,12 +17,12 @@ login:
 intro:
   title: 订单管理模块操作演示
   subtitle: 内部培训 ｜ 客服岗
-  narration: 本视频演示订单管理模块的日常操作，包括按订单号和状态查询，以及导出结果。请跟随画面操作。
+  narration: 本视频演示订单管理模块的常用操作。
   footer: 共 {steps} 个操作步骤 · 演示用时约 {duration} 秒
 
 outro:
   title: 演示结束
-  narration: 以上就是本次演示的全部内容。遇到订单状态异常，请先核对筛选条件，再联系信息中心。
+  narration: 以上就是本次演示的全部内容，感谢观看。
 
 manual:
   title: 订单管理模块操作手册

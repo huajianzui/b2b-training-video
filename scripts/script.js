@@ -382,8 +382,30 @@ const BUILTIN_CHECKED = ['参与', '参加', '参照', '调度', '卡片', '行�
   '衡量', '余量', '全量', '量化', '任务量', '名称', '重置', '重新', '清空', '空行', '空白', '占比', '弹出', '还可', '还没',
   '处理', '方便', '调整', '流转', '转正', '差不多', '差额', '进度差', '校验', '执行', '进行'];
 
-function narrationWarnings(scenes) {
+const FORBIDDEN_META_NARRATION = /演练阶段|本次只演示|本片段未执行|不实际发布|不实际提交|不会产生任何业务数据|不产生任何业务数据|不修改真实数据/;
+
+function narrationWarnings(scenes, intro, outro) {
   const warnings = [];
+  if (intro && intro.narration) {
+    const t = String(intro.narration);
+    const han = t.replace(/[^\u4e00-\u9fa5]/g, '').length;
+    if (han > 25 || /包括.*、|请跟随画面操作/.test(t)) {
+      warnings.push('intro：片头旁白过长（' + han + '字）或含步骤罗列套话，须精简为一句话（≤25字，如「本视频演示……的操作流程。」）');
+    }
+  }
+  if (outro && outro.narration) {
+    const t = String(outro.narration);
+    const han = t.replace(/[^\u4e00-\u9fa5]/g, '').length;
+    if (han > 20) {
+      warnings.push('outro：片尾旁白过长（' + han + '字），须精简为一句话（≤20字，如「以上就是……的操作演示，感谢观看。」）');
+    }
+  }
+  if (scenes.length > 0 && scenes[0].narration) {
+    const s0 = scenes[0];
+    if (!/菜单|导航|左侧|顶部/.test(s0.narration)) {
+      warnings.push(s0.id + '：首场景旁白未介绍如何通过菜单进入该功能（应边点击菜单边交代「在左侧菜单点击……进入……」），勿跳过菜单导航');
+    }
+  }
   for (const s of scenes) {
     const body = s.bodyNarrationText || '';
     const end = s.endNarrationText || '';
@@ -398,6 +420,9 @@ function narrationWarnings(scenes) {
     const longClauses = text.split(/[，。；！？、]/).map((c) => c.trim()).filter((c) => c.replace(/[^\u4e00-\u9fa5]/g, '').length > 24);
     if (longClauses.length) {
       warnings.push(s.id + '：分句过长（>24字），易导致字幕硬切或 TTS 断句异常：「' + longClauses[0].slice(0, 16) + '…」');
+    }
+    if (/解锁后续/.test(text)) {
+      warnings.push(s.id + '：含易粘连词组「解锁后续」，建议改为「即可创建…」或加逗号断开');
     }
   }
   return warnings;
@@ -485,6 +510,10 @@ function normalize(doc, file, { stage = 'record', recordedUploads = [] } = {}) {
     const timing = s.timing || 'with';
     if (timing !== 'with' && timing !== 'before') throw new ScriptError(where + '：timing 只能是 with 或 before');
     const narration = s.narration ? String(s.narration).trim() : '';
+    const metaHit = narration.match(FORBIDDEN_META_NARRATION);
+    if (metaHit) {
+      throw new ScriptError(where + '：旁白严禁包含内部演练/测试话术「' + metaHit[0] + '」，请改用面向业务用户的正常话术（如「核对后点击确定即可发布；暂不办理时可点击取消返回」）');
+    }
     let prevAt = -1;
     let lastPos = 0;
     const actions = (s.actions || []).map((a, j) => {
@@ -563,7 +592,7 @@ function normalize(doc, file, { stage = 'record', recordedUploads = [] } = {}) {
     intro,
     outro,
     pronounceHints: pronounceHints(narrations, Object.assign({}, BUILTIN_PRONOUNCE, doc.pronounce || {}), BUILTIN_CHECKED.concat(doc.pronounceChecked || []).map(String)),
-    narrationWarnings: narrationWarnings(scenes),
+    narrationWarnings: narrationWarnings(scenes, intro, outro),
     manual: {
       title: String((doc.manual && doc.manual.title) || String(doc.title || '操作演示').replace(/演示$/, '') + '手册'),
       version: doc.manual && doc.manual.version ? String(doc.manual.version) : '',

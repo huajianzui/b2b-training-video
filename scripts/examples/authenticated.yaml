@@ -29,15 +29,18 @@ readOnlyRequests:
   - method: POST
     url: /api/orders/search
 
-# 只修改配音文字，字幕保持原词；pronounceChecked 仅填写用户实际抽听过的词。
+# 只修改配音文字，字幕保持原词；严禁对「行/重/调」做单字全局替换，应按具体词组配置。
 pronounce:
-  行: {say: 航, except: [银行, 行为]}
+  跨行: 跨航
+  已选行: 已选航
 
 scenes:
   - id: list
-    name: 查看列表
-    narration: 表格每一行展示一条记录，查询条件按实际页面填写。
+    name: 从左侧菜单进入列表
+    narration: 首先在左侧菜单点击订单管理，进入订单列表查看记录。
     actions:
-      - goto: /orders
+      - goto: /
+      - click: { text: 订单管理 }
+        at: 点击订单管理
     expect:
       - visible: {css: '#orders-table'}
