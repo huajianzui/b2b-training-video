@@ -117,14 +117,14 @@ scenes:
     # 两种收尾都要写齐（演练按 rehearsalMode、录制按 writeMode 取用）；动作一律带 at
     ending:
       cancel:
-        narration: 暂不保存时，点取消关闭这个弹窗。
+        narration: 核对后点击保存即可更新备注，系统提示已保存并同步给后续发货人员参考；暂不保存时，点取消关闭这个弹窗。
         actions:
           - click: { role: button, name: 取消 }
             at: 点取消
         expect:
           - hidden: { role: dialog, name: 编辑订单备注 }
       submit:
-        narration: 核对无误后，现在点击保存。修改会立即生效；暂不修改时，可以取消返回。
+        narration: 核对无误后，现在点击保存。修改后系统提示已保存并同步给后续发货人员执行；暂不修改时，可以取消返回。
         actions:
           - click: { role: button, name: 保存 }
             at: 现在点击保存

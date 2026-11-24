@@ -31,13 +31,14 @@ readOnlyRequests:
 
 # 只修改配音文字，字幕保持原词；严禁对「行/重/调」做单字全局替换，应按具体词组配置。
 pronounce:
+  每一行: 每一航
   跨行: 跨航
   已选行: 已选航
 
 scenes:
   - id: list
     name: 从左侧菜单进入列表
-    narration: 首先在左侧菜单点击订单管理，进入订单列表查看记录。
+    narration: 首先在左侧菜单点击订单管理，进入订单列表，按行查看每一行订单的客户与金额。
     actions:
       - goto: /
       - click: { text: 订单管理 }

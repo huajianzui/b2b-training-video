@@ -9,6 +9,7 @@ confirmedAt: 2026-10-16T00:00:00.000Z
 
 environment:
   name: 本地演示页（无后端，不写任何业务数据）
+  tier: restricted # 三级环境与数据洁净度分级：isolated | shared-test | restricted
   testData: false # 不允许写测试数据，所以两轮的 writeMode / rehearsalMode 都只能是 cancel
 
 pages:
