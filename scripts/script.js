@@ -427,24 +427,24 @@ function assertCardAndEntryNorms(doc, scenes, intro, outro, feat) {
     if (!/菜单|导航|左侧|顶部/.test(s0.narration || '')) {
       throw new ScriptError(s0.id + '：介绍功能首先要让观众找到功能，首场景旁白必须交代如何通过菜单进入该功能（如「首先在左侧菜单点击……，进入……」），勿跳过菜单导航');
     }
-    if (!(s0.actions || []).some((a) => a.type === 'click')) {
+    if (!(s0.actions || []).some((a) => a.op === 'click')) {
       throw new ScriptError(s0.id + '：介绍功能首先要让观众找到功能，首场景必须包含点击菜单/页签进入功能页面的 click 动作，不能仅靠 goto 跳过菜单导航');
     }
     for (const s of scenes) {
       const acts = s.actions || [];
       for (const a of acts) {
-        if (a.type === 'goto' && DEEP_FORM_GOTO_RE.test(a.url || '')) {
+        if (a.op === 'goto' && DEEP_FORM_GOTO_RE.test(a.url || '')) {
           throw new ScriptError(s.id + '：严禁使用带具体记录 ID 或表单动作的 goto（' + a.url + '）跳过列表中的操作按钮点击；必须先在列表中筛选/定位目标行（操作列被遮挡时先横向 scroll），再真实 click 行上的操作按钮（如「发布」「编辑」）进入表单，让观众看到按钮位置与点击动作');
         }
       }
-      const firstFillIdx = acts.findIndex((a) => a.type === 'fill');
+      const firstFillIdx = acts.findIndex((a) => a.op === 'fill');
       if (firstFillIdx >= 0 && !s.continue) {
-        const hasClickBeforeFill = acts.slice(0, firstFillIdx).some((a) => a.type === 'click');
+        const hasClickBeforeFill = acts.slice(0, firstFillIdx).some((a) => a.op === 'click');
         if (!hasClickBeforeFill) {
           throw new ScriptError(s.id + '：进入表单填写前必须先在页面或列表中真实 click 触发按钮（如「新建」「发布」「编辑」），不能跳过点击入口按钮直接填表');
         }
       }
-      const fillCount = acts.filter((a) => a.type === 'fill').length;
+      const fillCount = acts.filter((a) => a.op === 'fill').length;
       if (fillCount >= 3 && !FIELD_RELATION_RE.test(s.narration || '')) {
         throw new ScriptError(s.id + '：包含多个表单字段填写时，旁白不能只机械报读字段名，必须介绍字段之间的业务关系、先后顺序或校验规则（如各时间节点的先后约束、金额比例关系等；若项目无文档，应从前后端校验代码、已有历史样本或通用业务常识中提炼补充）');
       }

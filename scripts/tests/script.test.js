@@ -253,9 +253,9 @@ test('严禁旁白出现内部演练话术、过长片头片尾及首场景跳�
 
   // 去掉深层 goto，但没有先 click 列表按钮就直接 fill 填表 -> 拦截
   f.source.scenes[1].actions = [
-    { fill: { label: '公示时间' }, value: '2026-11-24 10:00:00', at: '公示时间' },
-    { fill: { label: '报价开始时间' }, value: '2026-11-24 12:00:00', at: '报价开始时间' },
-    { fill: { label: '报价截止时间' }, value: '2026-11-25 12:00:00', at: '报价截止时间' },
+    { fill: { target: { label: '公示时间' }, text: '2026-11-24 10:00:00' }, at: '公示时间' },
+    { fill: { target: { label: '报价开始时间' }, text: '2026-11-24 12:00:00' }, at: '报价开始时间' },
+    { fill: { target: { label: '报价截止时间' }, text: '2026-11-25 12:00:00' }, at: '报价截止时间' },
   ];
   f.save();
   assert.throws(() => loadScript(f.file), /进入表单填写前必须先在页面或列表中真实 click 触发按钮/);
