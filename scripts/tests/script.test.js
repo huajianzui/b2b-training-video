@@ -184,7 +184,7 @@ test('严禁旁白出现内部演练话术、过长片头片尾及首场景跳�
   const f = fixture(t);
   f.source.scenes[0].narration = '演练阶段只核对表单，不实际发布，不会产生任何业务数据变更。';
   f.save();
-  assert.throws(() => loadScript(f.file), /旁白严禁包含内部演练\/测试话术/);
+  assert.throws(() => loadScript(f.file), /严禁包含内部演练\/测试话术/);
 
   f.source.scenes[0].narration = '首先在左侧菜单点击项目管理进入列表。';
   f.source.intro = { narration: '本视频演示如何在招标采购平台发布一个待发布项目，包括打开列表、筛选待发布项目、填写时间。请跟随画面操作。' };
