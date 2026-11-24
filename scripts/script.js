@@ -449,11 +449,11 @@ function assertCardAndEntryNorms(doc, scenes, intro, outro, feat) {
         throw new ScriptError(s.id + '：包含多个表单字段填写时，旁白不能只机械报读字段名，必须介绍字段之间的业务关系、先后顺序或校验规则（如各时间节点的先后约束、金额比例关系等；若项目无文档，应从前后端校验代码、已有历史样本或通用业务常识中提炼补充）');
       }
       if (s.endNarrationText) {
-        if (!SUBMIT_ACTION_RE.test(s.narration || '') || !SUBMIT_RESULT_RE.test(s.narration || '')) {
-          throw new ScriptError(s.id + '：写功能（无论真实提交还是填完取消 ending.cancel）旁白都必须讲清楚点击确定/保存/提交后的正确系统现象、状态变化或结果查看位置（如「核对无误后点击确定即可完成发布，系统提示发布成功且项目状态变为已发布」），让使用者知道怎样才算操作成功');
+        if (!SUBMIT_ACTION_RE.test(s.endNarrationText) || !SUBMIT_RESULT_RE.test(s.endNarrationText)) {
+          throw new ScriptError(s.id + '：写功能（无论真实提交还是填完取消 ending.cancel）收尾旁白都必须讲清楚点击确定/保存/提交后的正确系统现象、状态变化或结果查看位置（如「核对无误后点击确定即可完成发布，系统提示发布成功且项目状态变为已发布」），让使用者知道怎样才算操作成功');
         }
-        if (!BUSINESS_IMPACT_RE.test(s.narration || '')) {
-          throw new ScriptError(s.id + '：不只要介绍功能操作本身，还必须在旁白中介绍该功能生效后的业务影响（如对下游角色/供应商/审批人的通知或待办、开启或锁定的后续流程与修改限制等）');
+        if (!BUSINESS_IMPACT_RE.test(s.endNarrationText)) {
+          throw new ScriptError(s.id + '：不只要介绍功能操作本身，还必须在收尾旁白中介绍该功能生效后的业务影响（如对下游角色/供应商/审批人的通知或待办、开启或锁定的后续流程与修改限制等）');
         }
       }
     }
