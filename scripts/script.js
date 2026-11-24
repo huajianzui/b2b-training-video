@@ -382,10 +382,24 @@ const BUILTIN_CHECKED = ['参与', '参加', '参照', '调度', '卡片', '行�
   '衡量', '余量', '全量', '量化', '任务量', '名称', '重置', '重新', '清空', '空行', '空白', '占比', '弹出', '还可', '还没',
   '处理', '方便', '调整', '流转', '转正', '差不多', '差额', '进度差', '校验', '执行', '进行'];
 
-const FORBIDDEN_META_NARRATION = /演练阶段|本次只演示|本片段未执行|不实际发布|不实际提交|不会产生任何业务数据|不产生任何业务数据|不修改真实数据/;
+const FORBIDDEN_META_NARRATION = /演练阶段|本次演练|只做演练|仅作演练|本次只演示|本片段未执行|不实际发布|不实际提交|不会产生任何业务数据|不产生任何业务数据|不修改真实数据|零副作用/;
+const DEEP_FORM_GOTO_RE = /[?&](id|recordId|projectId|biddingId|taskId|orderId)=|[?&](toPublish|toEdit|toAdd|toDetail|toUpdate|toAudit)\b|\/(edit|detail|publish|audit)\/[^/?#]+/i;
+const SUBMIT_ACTION_RE = /(点击|点)[^，。；！？]{0,12}(确定|保存|提交|发布|确认|下发|通过|完成)/;
+const SUBMIT_RESULT_RE = /(后|即可|将|会)[^。！？]{0,28}(状态|变为|进入|成功|生效|生成|列表|流转|发送|通知|更新|完成|归档|提示)/;
+const BUSINESS_IMPACT_RE = /影响|下游|后续|供应商|审批|负责人|成员|团队|人员|客户端|通知|公告|消息|待办|开放|开启|解锁|锁定|禁止|不可|不能再|方可|才能|随即|自动|同步|流转|进入.*(阶段|环节|流程)|生效|报价|填报|核销|结算|权限/;
+const FIELD_RELATION_RE = /先后|顺序|早于|晚于|大于|小于|不超过|不少于|等于|联动|合计|上限|下限|区间|周期|开始.*截止|起始.*结束|之后|之前|关联|对应|计算|公式|比例|占比|规则|必须|不能|需/;
+
+function assertNoMetaText(text, where) {
+  if (!text) return;
+  const hit = String(text).match(FORBIDDEN_META_NARRATION);
+  if (hit) {
+    throw new ScriptError(where + '：严禁包含内部演练/测试话术「' + hit[0] + '」，请改用面向业务用户的正常话术（如「核对后点击确定即可发布，系统提示发布成功且状态变为已发布；暂不办理时可点击取消返回」）');
+  }
+}
 
 function assertCardAndEntryNorms(doc, scenes, intro, outro, feat) {
   if (intro && intro.narration) {
+    assertNoMetaText(intro.narration, 'intro');
     const t = String(intro.narration);
     const han = t.replace(/[^\u4e00-\u9fa5]/g, '').length;
     if (han > 25 || /包括.*、|请跟随画面操作/.test(t)) {
@@ -393,10 +407,16 @@ function assertCardAndEntryNorms(doc, scenes, intro, outro, feat) {
     }
   }
   if (outro && outro.narration) {
+    assertNoMetaText(outro.narration, 'outro');
     const t = String(outro.narration);
     const han = t.replace(/[^\u4e00-\u9fa5]/g, '').length;
     if (han > 20) {
       throw new ScriptError('outro：片尾旁白过长（' + han + '字），须精简为一句话（≤20字，如「以上就是……的操作演示，感谢观看。」）');
+    }
+  }
+  if (doc && doc.manual) {
+    for (const piece of [doc.manual.overview, ...asList(doc.manual.prerequisites), ...asList(doc.manual.notes)]) {
+      assertNoMetaText(piece, 'manual');
     }
   }
   if (doc && doc.intro && doc.outro && doc.manual && scenes.length > 0) {
@@ -409,6 +429,33 @@ function assertCardAndEntryNorms(doc, scenes, intro, outro, feat) {
     }
     if (!(s0.actions || []).some((a) => a.type === 'click')) {
       throw new ScriptError(s0.id + '：介绍功能首先要让观众找到功能，首场景必须包含点击菜单/页签进入功能页面的 click 动作，不能仅靠 goto 跳过菜单导航');
+    }
+    for (const s of scenes) {
+      const acts = s.actions || [];
+      for (const a of acts) {
+        if (a.type === 'goto' && DEEP_FORM_GOTO_RE.test(a.url || '')) {
+          throw new ScriptError(s.id + '：严禁使用带具体记录 ID 或表单动作的 goto（' + a.url + '）跳过列表中的操作按钮点击；必须先在列表中筛选/定位目标行（操作列被遮挡时先横向 scroll），再真实 click 行上的操作按钮（如「发布」「编辑」）进入表单，让观众看到按钮位置与点击动作');
+        }
+      }
+      const firstFillIdx = acts.findIndex((a) => a.type === 'fill');
+      if (firstFillIdx >= 0 && !s.continue) {
+        const hasClickBeforeFill = acts.slice(0, firstFillIdx).some((a) => a.type === 'click');
+        if (!hasClickBeforeFill) {
+          throw new ScriptError(s.id + '：进入表单填写前必须先在页面或列表中真实 click 触发按钮（如「新建」「发布」「编辑」），不能跳过点击入口按钮直接填表');
+        }
+      }
+      const fillCount = acts.filter((a) => a.type === 'fill').length;
+      if (fillCount >= 3 && !FIELD_RELATION_RE.test(s.narration || '')) {
+        throw new ScriptError(s.id + '：包含多个表单字段填写时，旁白不能只机械报读字段名，必须介绍字段之间的业务关系、先后顺序或校验规则（如各时间节点的先后约束、金额比例关系等；若项目无文档，应从前后端校验代码、已有历史样本或通用业务常识中提炼补充）');
+      }
+      if (s.endNarrationText) {
+        if (!SUBMIT_ACTION_RE.test(s.narration || '') || !SUBMIT_RESULT_RE.test(s.narration || '')) {
+          throw new ScriptError(s.id + '：写功能（无论真实提交还是填完取消 ending.cancel）旁白都必须讲清楚点击确定/保存/提交后的正确系统现象、状态变化或结果查看位置（如「核对无误后点击确定即可完成发布，系统提示发布成功且项目状态变为已发布」），让使用者知道怎样才算操作成功');
+        }
+        if (!BUSINESS_IMPACT_RE.test(s.narration || '')) {
+          throw new ScriptError(s.id + '：不只要介绍功能操作本身，还必须在旁白中介绍该功能生效后的业务影响（如对下游角色/供应商/审批人的通知或待办、开启或锁定的后续流程与修改限制等）');
+        }
+      }
     }
   }
 }
@@ -525,9 +572,12 @@ function normalize(doc, file, { stage = 'record', recordedUploads = [] } = {}) {
     const timing = s.timing || 'with';
     if (timing !== 'with' && timing !== 'before') throw new ScriptError(where + '：timing 只能是 with 或 before');
     const narration = s.narration ? String(s.narration).trim() : '';
-    const metaHit = narration.match(FORBIDDEN_META_NARRATION);
-    if (metaHit) {
-      throw new ScriptError(where + '：旁白严禁包含内部演练/测试话术「' + metaHit[0] + '」，请改用面向业务用户的正常话术（如「核对后点击确定即可发布；暂不办理时可点击取消返回」）');
+    assertNoMetaText(narration, where + ' 旁白');
+    assertNoMetaText(s.altNarration, where + ' 备选收尾旁白');
+    if (s.doc) {
+      assertNoMetaText(s.doc.text, where + ' doc.text');
+      assertNoMetaText(s.doc.result, where + ' doc.result');
+      for (const tip of asList(s.doc.tips)) assertNoMetaText(tip, where + ' doc.tips');
     }
     let prevAt = -1;
     let lastPos = 0;

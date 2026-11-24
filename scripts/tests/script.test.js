@@ -214,10 +214,70 @@ test('严禁旁白出现内部演练话术、过长片头片尾及首场景跳�
     confirmedAt: '2026-11-23T00:00:00.000Z',
     environment: { name: '测试环境', testData: false },
     pages: [{ id: 'list', name: '列表', entry: '左侧菜单', route: '/orders', files: ['a.vue'] }],
-    features: [{ id: 'list.view', page: 'list', name: '查看列表', kind: 'read', include: true }],
+    features: [{ id: 'list.publish', page: 'list', name: '发布项目', kind: 'write', include: true, writeMode: 'cancel', rehearsalMode: 'cancel' }],
   }));
   f.source.features = 'demo.features.yaml';
   f.source.scenes[0].actions = [{ click: { text: '项目管理' }, at: '点击项目管理' }];
   f.save();
   assert.throws(() => loadScript(f.file), /缺少 environment\.tier（三级环境与数据洁净度分级）/);
+
+  // 补齐 environment.tier 后，校验：
+  // 1) 禁止用带记录 ID 或 toPublish 的 goto 跳过列表按钮点击；
+  // 2) 多字段填写必须介绍字段间关系；
+  // 3) 写功能（含 ending.cancel）必须介绍点击确定后的正确现象与对下游的业务影响
+  fs.writeFileSync(featFile, YAML.stringify({
+    module: '项目管理',
+    confirmedAt: '2026-11-23T00:00:00.000Z',
+    environment: { name: '测试环境', tier: 'restricted', testData: false },
+    pages: [{ id: 'list', name: '列表', entry: '左侧菜单', route: '/orders', files: ['a.vue'] }],
+    features: [{ id: 'list.publish', page: 'list', name: '发布项目', kind: 'write', include: true, writeMode: 'cancel', rehearsalMode: 'cancel' }],
+  }));
+
+  f.source.scenes.push({
+    id: 's02',
+    name: '填写发布时间',
+    feature: 'list.publish',
+    narration: '点击发布进入表单，填写公示时间、报价开始时间、报价截止时间。',
+    actions: [
+      { goto: '/bmsController.do?toPublish&id=123' },
+    ],
+    ending: {
+      cancel: {
+        narration: '暂不发布时点击取消返回。',
+        actions: [{ click: { text: '取消' }, at: '点击取消' }],
+      },
+    },
+  });
+  f.save();
+  assert.throws(() => loadScript(f.file), /严禁使用带具体记录 ID 或表单动作的 goto/);
+
+  // 去掉深层 goto，但没有先 click 列表按钮就直接 fill 填表 -> 拦截
+  f.source.scenes[1].actions = [
+    { fill: { label: '公示时间' }, value: '2026-11-24 10:00:00', at: '公示时间' },
+    { fill: { label: '报价开始时间' }, value: '2026-11-24 12:00:00', at: '报价开始时间' },
+    { fill: { label: '报价截止时间' }, value: '2026-11-25 12:00:00', at: '报价截止时间' },
+  ];
+  f.save();
+  assert.throws(() => loadScript(f.file), /进入表单填写前必须先在页面或列表中真实 click 触发按钮/);
+
+  // 加上了 click 按钮，但 3 个 fill 字段只报读了字段名、没讲字段间先后关系 -> 拦截
+  f.source.scenes[1].actions.unshift({ click: { text: '发布' }, at: '点击发布' });
+  f.save();
+  assert.throws(() => loadScript(f.file), /必须介绍字段之间的业务关系、先后顺序或校验规则/);
+
+  // 讲了字段间先后顺序，但 ending.cancel 只讲了“点击取消”，没讲点击确定后的正确现象 -> 拦截
+  f.source.scenes[1].narration = '在列表点击发布打开弹窗，按先后顺序依次填写公示时间、报价开始时间与报价截止时间，后续时间不能早于前序节点。';
+  f.save();
+  assert.throws(() => loadScript(f.file), /旁白都必须讲清楚点击确定\/保存\/提交后的正确系统现象/);
+
+  // 讲了点击确定后的状态变化，但没讲功能生效后对下游角色/供应商的业务影响 -> 拦截
+  f.source.scenes[1].ending.cancel.narration = '核对后点击确定，系统将提示操作完成且状态变为已完结；暂不办理可点击取消返回。';
+  f.save();
+  assert.throws(() => loadScript(f.file), /不只要介绍功能操作本身，还必须在旁白中介绍该功能生效后的业务影响/);
+
+  // 同时讲清字段间先后关系、点击确定后的正确现象以及对下游供应商的业务影响 -> 编译通过
+  f.source.scenes[1].ending.cancel.narration = '核对后点击确定，系统将提示发布成功且状态变为已发布，同时生成采购公告通知供应商并在报价开始时间开放报价权限；暂不办理可点击取消返回。';
+  f.save();
+  const ok = loadScript(f.file);
+  assert.equal(ok.scenes.length, 2);
 });
