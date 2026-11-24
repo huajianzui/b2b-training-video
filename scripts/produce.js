@@ -137,8 +137,10 @@ if (Number(process.versions.node.split('.')[0]) < 20) {
       rehearsalScript = has('post') || has('dry') ? script : loadScript(SCRIPT_FILE, { stage: 'rehearsal' });
     } catch (e) {
       if (e.code === 'UNCONFIRMED') {
-        fail('[待确认] ' + e.message + '\n  确认页：node app/server.js 后打开 http://127.0.0.1:7788/features?f='
-          + encodeURIComponent(path.relative(HERE, e.featuresFile)));
+        const relFeat = path.relative(HERE, e.featuresFile);
+        fail('[待确认] ' + e.message + '\n  请先向用户确认三级环境与数据洁净度分级（environment.tier: isolated | shared-test | restricted），写入清单后执行：\n    node features.js '
+          + relFeat + ' --yes\n  （仅当用户要求网页勾选功能清单时才运行 node app/server.js 打开 http://127.0.0.1:7788/features?f='
+          + encodeURIComponent(relFeat) + '）');
       }
       fail('[脚本错误] ' + e.message);
     }
@@ -259,8 +261,16 @@ if (Number(process.versions.node.split('.')[0]) < 20) {
       pipeline.requireStage('check', ['manual/rehearsal/steps.json']);
       if (run('生成演练手册（Word）', NODE, [path.join(HERE, 'manual.js'), SCRIPT_FILE, '--rehearsal'], env) !== 0) fail('演练手册生成失败。');
       pipeline.complete('rehearsalManual', [script.manual.title.replace(/[\\/:*?"<>|]/g, '_').trim() + '（演练）.docx']);
+      const shotsDir = path.join(OUT, 'manual', 'rehearsal', 'shots');
+      const shots = fs.existsSync(shotsDir) ? fs.readdirSync(shotsDir).filter((f) => f.endsWith('.png')) : [];
+      console.log('\n[演练自检门禁] 已生成 ' + shots.length + ' 张演练截图（output/manual/rehearsal/shots/）。');
+      console.log('正式录制前请务必对照截图与 output/script.json 完成 9 项自检：');
+      console.log('  1) 视窗对齐（所讲内容是否已 scroll/展开入画、未讲完不切镜）  2) 可编辑态与角色权限');
+      console.log('  3) 设计巧思与对比/阈值冲突数据  4) 列表筛选状态与旁白阶段一致  5) 表单字段无 0% 等空跑值');
+      console.log('  6) 首幕菜单点入与列表按钮真实点击  7) 跨角色 switchUser 无登录页且步骤有 label/doc:false');
+      console.log('  8) 正文与收尾旁白零重复  9) 多音字 speech 注音与分句长度（≤24字）');
     }
-    console.log('\n（--dry：到此为止，未执行旁白与正式录制环节。去掉 --dry 正式出片。）');
+    console.log('\n（--dry：到此为止，未执行旁白与正式录制环节。自检通过后用 --from tts 正式出片。）');
     process.exit(0);
   }
 

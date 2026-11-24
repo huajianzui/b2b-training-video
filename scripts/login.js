@@ -182,11 +182,11 @@ function launch(headless) {
   });
 }
 
-async function newCtx(browser, storageState, cfg) {
+async function newCtx(browser, storageState, cfg, { humanLogin = false } = {}) {
   const opt = { viewport: { width: 1440, height: 900 }, locale: 'zh-CN', serviceWorkers: 'block' };
   if (storageState) opt.storageState = storageState;
   const context = await browser.newContext(opt);
-  context.requestGuard = await require('./requests').installRequestGuard(context, { ...cfg, pageUrl: cfg.url });
+  context.requestGuard = await require('./requests').installRequestGuard(context, { ...cfg, pageUrl: cfg.url, humanLogin });
   return context;
 }
 
@@ -556,7 +556,7 @@ async function captureLogin(cfg, log) {
   const browser = await launch(headless);
   let ctx = null;
   try {
-    ctx = await newCtx(browser, null, cfg);
+    ctx = await newCtx(browser, null, cfg, { humanLogin: cfg.mode !== 'auto' });
     let page = await ctx.newPage();
 
     log('[登录] 打开：' + cfg.url);

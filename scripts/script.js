@@ -384,10 +384,10 @@ const BUILTIN_CHECKED = ['参与', '参加', '参照', '调度', '卡片', '行�
 
 const FORBIDDEN_META_NARRATION = /演练阶段|本次演练|只做演练|仅作演练|本次只演示|本片段未执行|不实际发布|不实际提交|不会产生任何业务数据|不产生任何业务数据|不修改真实数据|零副作用/;
 const DEEP_FORM_GOTO_RE = /[?&](id|recordId|projectId|biddingId|taskId|orderId)=|[?&](toPublish|toEdit|toAdd|toDetail|toUpdate|toAudit)\b|\/(edit|detail|publish|audit)\/[^/?#]+/i;
-const SUBMIT_ACTION_RE = /(点击|点)[^，。；！？]{0,12}(确定|保存|提交|发布|确认|下发|通过|完成)/;
-const SUBMIT_RESULT_RE = /(后|即可|将|会)[^。！？]{0,28}(状态|变为|进入|成功|生效|生成|列表|流转|发送|通知|更新|完成|归档|提示)/;
-const BUSINESS_IMPACT_RE = /影响|下游|后续|供应商|审批|负责人|成员|团队|人员|客户端|通知|公告|消息|待办|开放|开启|解锁|锁定|禁止|不可|不能再|方可|才能|随即|自动|同步|流转|进入.*(阶段|环节|流程)|生效|报价|填报|核销|结算|权限/;
-const FIELD_RELATION_RE = /先后|顺序|早于|晚于|大于|小于|不超过|不少于|等于|联动|合计|上限|下限|区间|周期|之后|之前|关联|对应|计算|公式|比例|占比|规则|必须|不能|需/;
+const SUBMIT_ACTION_RE = /(点击|点)[^，。；！？]{0,14}(确定|保存|提交|发布|确认|下发|通过|完成|立项|入库|核销|归档|绑定|分配|转交|发起|申请|启用|停用|锁定|解锁|生成|执行)/;
+const SUBMIT_RESULT_RE = /(后|即可|将|会)[^。！？]{0,32}(状态|变为|进入|成功|生效|生成|列表|流转|发送|通知|更新|完成|归档|提示|锁定|解锁|启用|停用|入库|核销|回写|展示|显示)/;
+const BUSINESS_IMPACT_RE = /影响|下游|后续|供应商|审批|负责人|成员|团队|人员|客户端|通知|公告|消息|待办|开放|开启|解锁|锁定|禁止|不可|不能再|方可|才能|随即|自动|同步|流转|进入.*(阶段|环节|流程)|生效|报价|填报|核销|结算|权限|全局|标准|预警|拦截|核算|统计|报表/;
+const FIELD_RELATION_RE = /先后|顺序|早于|晚于|大于|小于|不超过|不少于|等于|联动|合计|上限|下限|区间|周期|之后|之前|关联|对应|计算|公式|比例|占比|规则|必须|不能|需|一致|匹配|折算|反算/;
 
 function assertNoMetaText(text, where) {
   if (!text) return;
@@ -534,7 +534,7 @@ function normalize(doc, file, { stage = 'record', recordedUploads = [] } = {}) {
   if (doc.features) {
     feat = loadFeatures(path.resolve(baseDir, String(doc.features)));
     if (!feat.confirmedAt) {
-      const e = new ScriptError('功能清单「' + path.basename(feat.file) + '」还没有确认，先在确认页勾选要演示的功能并点确认');
+      const e = new ScriptError('功能清单「' + path.basename(feat.file) + '」还没有确认，请先向用户确认三级环境与数据洁净度分级（environment.tier）后执行 node features.js ' + path.basename(feat.file) + ' --yes');
       e.code = 'UNCONFIRMED';
       e.featuresFile = feat.file;
       throw e;

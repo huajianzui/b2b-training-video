@@ -66,7 +66,7 @@ const executionHash = (script) => crypto.createHash('sha256').update(JSON.string
   scenes: script.scenes, readOnlyRequests: script.readOnlyRequests, safety: script.safety,
 })).digest('hex');
 
-async function installRequestGuard(context, { readOnlyRequests = [], writeRequests = [], approvedWriteRequests = [], pageUrl, trial = false } = {}) {
+async function installRequestGuard(context, { readOnlyRequests = [], writeRequests = [], approvedWriteRequests = [], pageUrl, trial = false, humanLogin = false } = {}) {
   // 仅运行进程展开只读连接的查询值；脚本、确认指纹和产物始终保留变量引用。
   readOnlyRequests = readOnlyRequests.map(rule => {
     if (rule.method !== 'WS') return rule;
@@ -80,8 +80,11 @@ async function installRequestGuard(context, { readOnlyRequests = [], writeReques
   });
   assertDisjoint(readOnlyRequests, writeRequests);
   // fulfill 的页面没有浏览器连接的地址空间；Chrome 的 LNA 会误挡其同源内网连接。
-  // 只为脚本明确指定的页面来源授权，本模块的接口策略仍逐条检查。
-  if (pageUrl && /^https?:/.test(pageUrl)) await context.grantPermissions(['local-network-access'], { origin: new URL(pageUrl).origin });
+  // 只为脚本明确指定的页面来源授权，本模块的接口策略仍逐条检查。某些 Chromium 构建不支持该权限名时静默降级。
+  const pageOrigin = pageUrl && /^https?:/.test(pageUrl) ? new URL(pageUrl).origin : '';
+  if (pageOrigin && typeof context.grantPermissions === 'function') {
+    await Promise.resolve(context.grantPermissions(['local-network-access'], { origin: pageOrigin })).catch(() => {});
+  }
   const violations = [], writes = [], blockedWrites = [];
   let grant = [], closing = false;
   const describe = (method, value) => {
@@ -103,6 +106,7 @@ async function installRequestGuard(context, { readOnlyRequests = [], writeReques
     if (/%(?:2f|5c|00)/i.test(new URL(url).pathname)) return false;
     // HEAD 可能复用服务端 GET 处理器；已知 GET 写路径也不能以 HEAD 绕过。
     const declaredWrite = writeRequests.some((r) => matches(r, method === 'HEAD' ? 'GET' : method, url, { ignoreSearch: true }));
+    if (!declaredWrite && humanLogin && pageOrigin && new URL(url).origin === pageOrigin) return true;
     return approved.some((r) => matches(r, method, url, { ignoreSearch: r.method !== 'GET' && new URL(r.url).search === '' }))
       || (!declaredWrite && (SAFE_METHODS.has(method) || readOnlyRequests.some((r) => matches(r, method, url))));
   }
